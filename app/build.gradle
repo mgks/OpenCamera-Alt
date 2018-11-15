@@ -1,31 +1,31 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 27
+    compileSdkVersion 28
     compileOptions.encoding = 'UTF-8'
-
     defaultConfig {
         applicationId "net.sourceforge.opencamera"
         minSdkVersion 15
-        targetSdkVersion 27
+        targetSdkVersion 28
 
-		renderscriptTargetApi 20
-		//renderscriptSupportModeEnabled true // don't use support library as it bloats the APK, and we don't need pre-4.4 support
-		//need build tools higher than 20 at least to support ScriptIntrinsicHistogram
+        renderscriptTargetApi 20
+        //renderscriptSupportModeEnabled true // don't use support library as it bloats the APK, and we don't need pre-4.4 support
+        //need build tools higher than 20 at least to support ScriptIntrinsicHistogram
 
-        testApplicationId "net.sourceforge.opencamera.test"
+        testApplicationId 'mgks.alt.opencamera'
         testInstrumentationRunner "android.test.InstrumentationTestRunner"
     }
-
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
         }
     }
-
     lintOptions {
         checkReleaseBuilds false
+    }
+    buildToolsVersion '28.0.3'
+    productFlavors {
     }
 }
 
