@@ -96,8 +96,7 @@
         android:layout_marginRight="20dp"
         android:layout_marginTop="0dp"
         android:layout_marginBottom="0dp"
-        android:background="@color/seekbar_background"
-        />
+        android:background="@color/seekbar_background" />
 
     <SeekBar
         android:id="@+id/focus_seekbar"
