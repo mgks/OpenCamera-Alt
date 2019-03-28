@@ -71,62 +71,6 @@
         <item>120</item>
         <item>300</item>
     </string-array>
-    <string-array name="preference_burst_mode_entries">
-        <item>なし</item>
-        <item>2倍</item>
-        <item>3倍</item>
-        <item>4倍</item>
-        <item>5倍</item>
-        <item>10倍</item>
-        <item>無制限</item>
-    </string-array>
-    <string-array name="preference_burst_mode_values">
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>4</item>
-        <item>5</item>
-        <item>10</item>
-        <item>unlimited</item>
-    </string-array>
-    <string-array name="preference_burst_interval_entries">
-        <item>なし</item>
-        <item>1秒</item>
-        <item>2秒</item>
-        <item>3秒</item>
-        <item>5秒</item>
-        <item>10秒</item>
-        <item>15秒</item>
-        <item>20秒</item>
-        <item>30秒</item>
-        <item>1分</item>
-        <item>2分</item>
-        <item>5分</item>
-        <item>10分</item>
-        <item>20分</item>
-		<item>30分</item>
-		<item>1時間</item>
-		<item>2時間</item>
-    </string-array>
-    <string-array name="preference_burst_interval_values">
-        <item>0</item>
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>5</item>
-        <item>10</item>
-        <item>15</item>
-        <item>20</item>
-        <item>30</item>
-        <item>60</item>
-        <item>120</item>
-        <item>300</item>
-        <item>600</item>
-        <item>1200</item>
-        <item>1800</item>
-        <item>3600</item>
-        <item>7200</item>
-    </string-array>
     <string-array name="preference_preview_size_entries">
         <item>最大サイズ</item>
         <item>マッチしたサイズ (WYSIWYG)</item>
@@ -170,14 +114,6 @@
     <string-array name="preference_rotate_preview_values">
         <item>0</item>
         <item>180</item>
-    </string-array>
-    <string-array name="preference_ui_placement_entries">
-        <item>左利き用</item>
-        <item>右利き用</item>
-    </string-array>
-    <string-array name="preference_ui_placement_values">
-        <item>ui_left</item>
-        <item>ui_right</item>
     </string-array>
     <string-array name="preference_immersive_mode_entries">
         <item>オフ</item>
@@ -234,32 +170,6 @@
         <item>preference_grid_golden_triangle_1</item>
         <item>preference_grid_golden_triangle_2</item>
         <item>preference_grid_diagonals</item>
-    </string-array>
-    <string-array name="preference_crop_guide_entries">
-        <item>なし</item>
-        <item>1.00 (1対1)</item>
-        <item>1.25 (5対4)</item>
-        <item>1.33 (4対3)</item>
-        <item>1.40 (7対4)</item>
-        <item>1.50 (3対2)</item>
-        <item>1.78 (16対9)</item>
-        <item>1.85 (37対20)</item>
-        <item>2.33 (21対9)</item>
-        <item>2.35 (47対20)</item>
-        <item>2.40 (12対5)</item>
-    </string-array>
-    <string-array name="preference_crop_guide_values">
-        <item>crop_guide_none</item>
-        <item>crop_guide_1</item>
-        <item>crop_guide_1.25</item>
-        <item>crop_guide_1.33</item>
-        <item>crop_guide_1.4</item>
-        <item>crop_guide_1.5</item>
-        <item>crop_guide_1.78</item>
-        <item>crop_guide_1.85</item>
-        <item>crop_guide_2.33</item>
-        <item>crop_guide_2.35</item>
-        <item>crop_guide_2.4</item>
     </string-array>
     <string-array name="preference_stamp_entries">
         <item>スタンプなし</item>

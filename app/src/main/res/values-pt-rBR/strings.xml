@@ -148,7 +148,7 @@
     <string name="preference_keep_display_on">Manter a tela ligada</string>
     <string name="preference_keep_display_on_summary">Se habilitada, a tela não desligará enquanto a IU do Open Camera estiver aberta</string>
     <string name="preference_max_brightness">Forçar brilho máximo</string>
-    <string name="preference_max_brightness_summary">Força a exibição da tela a ser em brilho máximo, em vez no padrão do dispositivo</string>
+    <string name="preference_max_brightness_summary">Força a exibição da tela a ser em brilho máximo, em vez de no padrão do dispositivo</string>
 	
     <string name="preference_category_camera_quality">Configurações de Foto e Vídeo</string>
     <string name="preference_screen_photo_settings">Configurações de Foto</string>
@@ -159,8 +159,8 @@
     <string name="preference_quality_summary">Defina a qualidade da imagem das fotos salvas (90%% é recomendado)\n%s</string>
     <string name="preference_location">Geotag</string>
     <string name="preference_location_summary">Armazena a localização de GPS no arquivo de fotos/vídeos</string>
-    <string name="preference_gps_direction">Salvar direções de compasso</string>
-    <string name="preference_gps_direction_summary">Salva direções de compasso em fotos</string>
+    <string name="preference_gps_direction">Salvar direções da bússola</string>
+    <string name="preference_gps_direction_summary">Salva direções da bússola em fotos</string>
     <string name="preference_require_location">Somente com Geotag</string>
     <string name="preference_require_location_summary">Se o Geotag estiver habilitado, só capturará fotos/vídeos se o GPS estiver disponível</string>
     <string name="preference_stamp">Marca d\'água</string>
@@ -282,4 +282,46 @@
     <string name="preference_video_bitrate_80000000">80Mbps</string>
     <string name="preference_video_bitrate_90000000">90Mbps</string>
     <string name="preference_video_bitrate_100000000">100Mbps</string>
+
+    <string name="preference_burst_mode_off">Desligado</string>
+    <string name="preference_burst_mode_2x">2x</string>
+    <string name="preference_burst_mode_3x">3x</string>
+    <string name="preference_burst_mode_4x">4x</string>
+    <string name="preference_burst_mode_5x">5x</string>
+    <string name="preference_burst_mode_10x">10x</string>
+    <string name="preference_burst_mode_unlimited">Ilimitado</string>
+
+    <string name="preference_burst_interval_no_delay">Nenhum</string>
+    <string name="preference_burst_interval_1s">1s</string>
+    <string name="preference_burst_interval_2s">2s</string>
+    <string name="preference_burst_interval_3s">3s</string>
+    <string name="preference_burst_interval_5s">5s</string>
+    <string name="preference_burst_interval_10s">10s</string>
+    <string name="preference_burst_interval_15s">15s</string>
+    <string name="preference_burst_interval_20s">20s</string>
+    <string name="preference_burst_interval_30s">30s</string>
+    <string name="preference_burst_interval_1m">1min</string>
+    <string name="preference_burst_interval_2m">2min</string>
+    <string name="preference_burst_interval_5m">5min</string>
+    <string name="preference_burst_interval_10m">10min</string>
+    <string name="preference_burst_interval_20m">20min</string>
+    <string name="preference_burst_interval_30m">30min</string>
+    <string name="preference_burst_interval_1h">1h</string>
+    <string name="preference_burst_interval_2h">2h</string>
+
+    <string name="preference_crop_guide_none">Nenhuma</string>
+    <string name="preference_crop_guide_1">1 (1:1)</string>
+    <string name="preference_crop_guide_1_25">1.25 (5:4)</string>
+    <string name="preference_crop_guide_1_33">1.33 (4:3)</string>
+    <string name="preference_crop_guide_1_4">1.4 (7:4)</string>
+    <string name="preference_crop_guide_1_5">1.5 (3:2)</string>
+    <string name="preference_crop_guide_1_78">1.78 (16:9)</string>
+    <string name="preference_crop_guide_1_85">1.85 (37:20)</string>
+    <string name="preference_crop_guide_2_33">2.33 (21:9)</string>
+    <string name="preference_crop_guide_2_35">2.35 (47:20)</string>
+    <string name="preference_crop_guide_2_4">2.4 (12:5)</string>
+
+    <string name="preference_ui_placement_left">Interface para canhoto</string>
+    <string name="preference_ui_placement_right">Interface para destro</string>
+
 </resources>

@@ -439,4 +439,61 @@
     <string name="preference_video_bitrate_80000000">80Mbps</string>
     <string name="preference_video_bitrate_90000000">90Mbps</string>
     <string name="preference_video_bitrate_100000000">100Mbps</string>
+
+    <string name="preference_burst_mode_off">Ki</string>
+    <string name="preference_burst_mode_2x">2x</string>
+    <string name="preference_burst_mode_3x">3x</string>
+    <string name="preference_burst_mode_4x">4x</string>
+    <string name="preference_burst_mode_5x">5x</string>
+    <string name="preference_burst_mode_10x">10x</string>
+    <string name="preference_burst_mode_unlimited">Korlátlan</string>
+
+    <string name="preference_burst_interval_no_delay">Nincs késleltetés</string>
+    <string name="preference_burst_interval_1s">1mp</string>
+    <string name="preference_burst_interval_2s">2mp</string>
+    <string name="preference_burst_interval_3s">3mp</string>
+    <string name="preference_burst_interval_5s">5mp</string>
+    <string name="preference_burst_interval_10s">10mp</string>
+    <string name="preference_burst_interval_15s">15mp</string>
+    <string name="preference_burst_interval_20s">20mp</string>
+    <string name="preference_burst_interval_30s">30mp</string>
+    <string name="preference_burst_interval_1m">1p</string>
+    <string name="preference_burst_interval_2m">2p</string>
+    <string name="preference_burst_interval_5m">5p</string>
+    <string name="preference_burst_interval_10m">10p</string>
+    <string name="preference_burst_interval_20m">20p</string>
+    <string name="preference_burst_interval_30m">30p</string>
+    <string name="preference_burst_interval_1h">1ó</string>
+    <string name="preference_burst_interval_2h">2ó</string>
+
+    <string name="preference_video_max_filesize_default">Készülék alapértelmezett</string>
+    <string name="preference_video_max_filesize_100mb">100MB</string>
+    <string name="preference_video_max_filesize_200mb">200MB</string>
+    <string name="preference_video_max_filesize_300mb">300MB</string>
+    <string name="preference_video_max_filesize_500mb">500MB</string>
+    <string name="preference_video_max_filesize_1gb">1GB</string>
+
+    <string name="preference_crop_guide_none">Nincs</string>
+    <string name="preference_crop_guide_1">1 (1:1)</string>
+    <string name="preference_crop_guide_1_25">1.25 (5:4)</string>
+    <string name="preference_crop_guide_1_33">1.33 (4:3)</string>
+    <string name="preference_crop_guide_1_4">1.4 (7:4)</string>
+    <string name="preference_crop_guide_1_5">1.5 (3:2)</string>
+    <string name="preference_crop_guide_1_78">1.78 (16:9)</string>
+    <string name="preference_crop_guide_1_85">1.85 (37:20)</string>
+    <string name="preference_crop_guide_2_33">2.33 (21:9)</string>
+    <string name="preference_crop_guide_2_35">2.35 (47:20)</string>
+    <string name="preference_crop_guide_2_4">2.4 (12:5)</string>
+
+    <string name="preference_audio_noise_control_sensitivity_3">+3 (nagy érzékenység)</string>
+    <string name="preference_audio_noise_control_sensitivity_2">+2</string>
+    <string name="preference_audio_noise_control_sensitivity_1">+1</string>
+    <string name="preference_audio_noise_control_sensitivity_0">0 (alapértelmezett)</string>
+    <string name="preference_audio_noise_control_sensitivity_m1">-1</string>
+    <string name="preference_audio_noise_control_sensitivity_m2">-2</string>
+    <string name="preference_audio_noise_control_sensitivity_m3">-3 (alacsony érzékenység)</string>
+
+    <string name="preference_ui_placement_left">Balkezes felhasználói felület</string>
+    <string name="preference_ui_placement_right">Jobbkezes felhasználói felület</string>
+
 </resources>

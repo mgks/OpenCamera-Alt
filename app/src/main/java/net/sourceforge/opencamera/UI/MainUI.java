@@ -13,10 +13,14 @@ import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Point;
+import android.graphics.Rect;
 import android.media.AudioManager;
 import android.os.Build;
 import android.preference.PreferenceManager;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Display;
 import android.view.KeyEvent;
 import android.view.OrientationEventListener;
 import android.view.Surface;
@@ -28,6 +32,7 @@ import android.view.animation.Animation;
 import android.view.animation.ScaleAnimation;
 import android.widget.Button;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.ZoomControls;
@@ -50,7 +55,13 @@ public class MainUI {
 	private boolean force_destroy_popup = false; // if true, then the popup isn't cached for only the next time the popup is closed
 
     private int current_orientation;
-	private boolean ui_placement_right = true;
+    enum UIPlacement {
+    	UIPLACEMENT_RIGHT,
+    	UIPLACEMENT_LEFT,
+    	UIPLACEMENT_TOP
+	}
+	private UIPlacement ui_placement = UIPlacement.UIPLACEMENT_RIGHT;
+	private int top_margin = 0;
 	private boolean view_rotate_animation;
 
 	private boolean immersive_mode;
@@ -60,8 +71,24 @@ public class MainUI {
 	private boolean keydown_volume_up;
 	private boolean keydown_volume_down;
 
+	// For remote control: keep track of the currently highlighted
+	// line and icon within the line
+	private boolean remote_control_mode; // whether remote control mode is enabled
+	private int mPopupLine = 0;
+	private int mPopupIcon = 0;
+	private LinearLayout mHighlightedLine;
+	private View mHighlightedIcon;
+	private boolean mSelectingIcons = false;
+	private boolean mSelectingLines = false;
+	private int mExposureLine = 0;
+	private boolean mSelectingExposureUIElement = false;
+	private final int highlightColor = Color.rgb(183, 28, 28); // Red 900
+	private final int highlightColorExposureUIElement = Color.rgb(244, 67, 54); // Red 500
+
 	// for testing:
 	private final Map<String, View> test_ui_buttons = new Hashtable<>();
+	public int test_saved_popup_width;
+	public int test_saved_popup_height;
 
 	public MainUI(MainActivity main_activity) {
 		if( MyDebug.LOG )
@@ -69,24 +96,6 @@ public class MainUI {
 		this.main_activity = main_activity;
 		
 		this.setSeekbarColors();
-
-		this.setIcon(R.id.gallery);
-		this.setIcon(R.id.settings);
-		this.setIcon(R.id.popup);
-		this.setIcon(R.id.exposure_lock);
-		this.setIcon(R.id.exposure);
-		//this.setIcon(R.id.switch_video);
-		//this.setIcon(R.id.switch_camera);
-		this.setIcon(R.id.audio_control);
-		this.setIcon(R.id.trash);
-		this.setIcon(R.id.share);
-	}
-	
-	private void setIcon(int id) {
-		if( MyDebug.LOG )
-			Log.d(TAG, "setIcon: " + id);
-	    ImageButton button = main_activity.findViewById(id);
-	    button.setBackgroundColor(Color.argb(63, 63, 63, 63)); // n.b., rgb color seems to be ignored for Android 6 onwards, but still relevant for older versions
 	}
 	
 	private void setSeekbarColors() {
@@ -146,20 +155,35 @@ public class MainUI {
 		layoutUI(false);
 	}
 
+	private UIPlacement computeUIPlacement() {
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		String ui_placement_string = sharedPreferences.getString(PreferenceKeys.UIPlacementPreferenceKey, "ui_right");
+		switch( ui_placement_string ) {
+			case "ui_left":
+				return UIPlacement.UIPLACEMENT_LEFT;
+			case "ui_top":
+				return UIPlacement.UIPLACEMENT_TOP;
+			default:
+				return UIPlacement.UIPLACEMENT_RIGHT;
+		}
+	}
+
     private void layoutUI(boolean popup_container_only) {
 		long debug_time = 0;
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "layoutUI");
 			debug_time = System.currentTimeMillis();
 		}
-		//main_activity.getPreview().updateUIPlacement();
+
+		// reset:
+		top_margin = 0;
+
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
-		String ui_placement = sharedPreferences.getString(PreferenceKeys.UIPlacementPreferenceKey, "ui_right");
     	// we cache the preference_ui_placement to save having to check it in the draw() method
-		this.ui_placement_right = ui_placement.equals("ui_right");
+		this.ui_placement = computeUIPlacement();
 		if( MyDebug.LOG )
 			Log.d(TAG, "ui_placement: " + ui_placement);
-		// new code for orientation fixed to landscape	
+		// new code for orientation fixed to landscape
 		// the display orientation should be locked to landscape, but how many degrees is that?
 	    int rotation = main_activity.getWindowManager().getDefaultDisplay().getRotation();
 	    int degrees = 0;
@@ -180,7 +204,7 @@ public class MainUI {
 			Log.d(TAG, "    degrees = " + degrees);
 			Log.d(TAG, "    relative_orientation = " + relative_orientation);
 		}
-		int ui_rotation = (360 - relative_orientation) % 360;
+		final int ui_rotation = (360 - relative_orientation) % 360;
 		main_activity.getPreview().setUIRotation(ui_rotation);
 		int align_left = RelativeLayout.ALIGN_LEFT;
 		int align_right = RelativeLayout.ALIGN_RIGHT;
@@ -188,130 +212,190 @@ public class MainUI {
 		//int align_bottom = RelativeLayout.ALIGN_BOTTOM;
 		int left_of = RelativeLayout.LEFT_OF;
 		int right_of = RelativeLayout.RIGHT_OF;
+		int iconpanel_left_of = left_of;
+		int iconpanel_right_of = right_of;
 		int above = RelativeLayout.ABOVE;
 		int below = RelativeLayout.BELOW;
+		int iconpanel_above = above;
+		int iconpanel_below = below;
 		int align_parent_left = RelativeLayout.ALIGN_PARENT_LEFT;
 		int align_parent_right = RelativeLayout.ALIGN_PARENT_RIGHT;
+		int iconpanel_align_parent_left = align_parent_left;
+		int iconpanel_align_parent_right = align_parent_right;
 		int align_parent_top = RelativeLayout.ALIGN_PARENT_TOP;
 		int align_parent_bottom = RelativeLayout.ALIGN_PARENT_BOTTOM;
-		if( !ui_placement_right ) {
-			//align_top = RelativeLayout.ALIGN_BOTTOM;
-			//align_bottom = RelativeLayout.ALIGN_TOP;
+		int iconpanel_align_parent_top = align_parent_top;
+		int iconpanel_align_parent_bottom = align_parent_bottom;
+		if( ui_placement == UIPlacement.UIPLACEMENT_LEFT ) {
 			above = RelativeLayout.BELOW;
 			below = RelativeLayout.ABOVE;
 			align_parent_top = RelativeLayout.ALIGN_PARENT_BOTTOM;
 			align_parent_bottom = RelativeLayout.ALIGN_PARENT_TOP;
+			iconpanel_align_parent_top = align_parent_top;
+			iconpanel_align_parent_bottom = align_parent_bottom;
 		}
+		else if( ui_placement == UIPlacement.UIPLACEMENT_TOP ) {
+			iconpanel_left_of = RelativeLayout.BELOW;
+			iconpanel_right_of = RelativeLayout.ABOVE;
+			iconpanel_above = RelativeLayout.LEFT_OF;
+			iconpanel_below = RelativeLayout.RIGHT_OF;
+			iconpanel_align_parent_left = RelativeLayout.ALIGN_PARENT_BOTTOM;
+			iconpanel_align_parent_right = RelativeLayout.ALIGN_PARENT_TOP;
+			iconpanel_align_parent_top = RelativeLayout.ALIGN_PARENT_LEFT;
+			iconpanel_align_parent_bottom = RelativeLayout.ALIGN_PARENT_RIGHT;
+		}
+
+		Point display_size = new Point();
+		Display display = main_activity.getWindowManager().getDefaultDisplay();
+		display.getSize(display_size);
+		final int display_height = Math.min(display_size.x, display_size.y);
 
 		if( !popup_container_only )
 		{
 			// we use a dummy button, so that the GUI buttons keep their positioning even if the Settings button is hidden (visibility set to View.GONE)
 			View view = main_activity.findViewById(R.id.gui_anchor);
 			RelativeLayout.LayoutParams layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_left, 0);
-			layoutParams.addRule(align_parent_right, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, 0);
-			layoutParams.addRule(right_of, 0);
+			layoutParams.addRule(iconpanel_align_parent_left, 0);
+			layoutParams.addRule(iconpanel_align_parent_right, RelativeLayout.TRUE);
+			layoutParams.addRule(iconpanel_align_parent_top, RelativeLayout.TRUE);
+			layoutParams.addRule(iconpanel_align_parent_bottom, 0);
+			layoutParams.addRule(iconpanel_above, 0);
+			layoutParams.addRule(iconpanel_below, 0);
+			layoutParams.addRule(iconpanel_left_of, 0);
+			layoutParams.addRule(iconpanel_right_of, 0);
 			view.setLayoutParams(layoutParams);
 			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.gallery);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.gui_anchor);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.settings);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.gallery);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.popup);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.settings);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.exposure_lock);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.popup);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.exposure);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.exposure_lock);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			/*view = main_activity.findViewById(R.id.switch_video);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.exposure);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);*/
-	
-			/*view = main_activity.findViewById(R.id.switch_camera);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_left, 0);
-			layoutParams.addRule(align_parent_right, 0);
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			//layoutParams.addRule(left_of, R.id.switch_video);
-			layoutParams.addRule(left_of, R.id.exposure);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);*/
+			View previous_view = view;
 
-			view = main_activity.findViewById(R.id.audio_control);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_left, 0);
-			layoutParams.addRule(align_parent_right, 0);
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			//layoutParams.addRule(left_of, R.id.switch_camera);
-			layoutParams.addRule(left_of, R.id.exposure);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
+			List<View> buttons_permanent = new ArrayList<>();
+			if( ui_placement == UIPlacement.UIPLACEMENT_TOP ) {
+                // not part of the icon panel in TOP mode
+                view = main_activity.findViewById(R.id.gallery);
+                layoutParams = (RelativeLayout.LayoutParams) view.getLayoutParams();
+                layoutParams.addRule(align_parent_left, 0);
+                layoutParams.addRule(align_parent_right, RelativeLayout.TRUE);
+                layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
+                layoutParams.addRule(align_parent_bottom, 0);
+                layoutParams.addRule(above, 0);
+                layoutParams.addRule(below, 0);
+                layoutParams.addRule(left_of, 0);
+                layoutParams.addRule(right_of, 0);
+                view.setLayoutParams(layoutParams);
+                setViewRotation(view, ui_rotation);
+            }
+            else {
+                buttons_permanent.add(main_activity.findViewById(R.id.gallery));
+            }
+            buttons_permanent.add(main_activity.findViewById(R.id.settings));
+            buttons_permanent.add(main_activity.findViewById(R.id.popup));
+            buttons_permanent.add(main_activity.findViewById(R.id.exposure));
+            //buttons_permanent.add(main_activity.findViewById(R.id.switch_video));
+            //buttons_permanent.add(main_activity.findViewById(R.id.switch_camera));
+            buttons_permanent.add(main_activity.findViewById(R.id.exposure_lock));
+			buttons_permanent.add(main_activity.findViewById(R.id.white_balance_lock));
+			buttons_permanent.add(main_activity.findViewById(R.id.store_location));
+			buttons_permanent.add(main_activity.findViewById(R.id.text_stamp));
+			buttons_permanent.add(main_activity.findViewById(R.id.stamp));
+			buttons_permanent.add(main_activity.findViewById(R.id.auto_level));
+			buttons_permanent.add(main_activity.findViewById(R.id.face_detection));
+            buttons_permanent.add(main_activity.findViewById(R.id.audio_control));
+			buttons_permanent.add(main_activity.findViewById(R.id.kraken_icon));
 
-			view = main_activity.findViewById(R.id.trash);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.audio_control);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
-	
-			view = main_activity.findViewById(R.id.share);
-			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
-			layoutParams.addRule(align_parent_bottom, 0);
-			layoutParams.addRule(left_of, R.id.trash);
-			layoutParams.addRule(right_of, 0);
-			view.setLayoutParams(layoutParams);
-			setViewRotation(view, ui_rotation);
+			List<View> buttons_all = new ArrayList<>(buttons_permanent);
+			// icons which only sometimes show on the icon panel:
+            buttons_all.add(main_activity.findViewById(R.id.trash));
+            buttons_all.add(main_activity.findViewById(R.id.share));
+
+			for(View this_view : buttons_all) {
+				layoutParams = (RelativeLayout.LayoutParams)this_view.getLayoutParams();
+				layoutParams.addRule(iconpanel_align_parent_left, 0);
+				layoutParams.addRule(iconpanel_align_parent_right, 0);
+				layoutParams.addRule(iconpanel_align_parent_top, RelativeLayout.TRUE);
+				layoutParams.addRule(iconpanel_align_parent_bottom, 0);
+				layoutParams.addRule(iconpanel_above, 0);
+				layoutParams.addRule(iconpanel_below, 0);
+				layoutParams.addRule(iconpanel_left_of, previous_view.getId());
+				layoutParams.addRule(iconpanel_right_of, 0);
+				this_view.setLayoutParams(layoutParams);
+				setViewRotation(this_view, ui_rotation);
+				previous_view = this_view;
+			}
+
+			int button_size = main_activity.getResources().getDimensionPixelSize(R.dimen.onscreen_button_size);
+			if( ui_placement == UIPlacement.UIPLACEMENT_TOP ) {
+			    // need to dynamically lay out the permanent icons
+
+				int count = 0;
+				View first_visible_view = null;
+				View last_visible_view = null;
+				for(View this_view : buttons_permanent) {
+					if( this_view.getVisibility() == View.VISIBLE ) {
+						if( first_visible_view == null )
+							first_visible_view = this_view;
+						last_visible_view = this_view;
+						count++;
+					}
+				}
+				//count = 10; // test
+				if( MyDebug.LOG ) {
+					Log.d(TAG, "count: " + count);
+					Log.d(TAG, "display_height: " + display_height);
+				}
+				if( count > 0 ) {
+					/*int button_size = display_height / count;
+					if( MyDebug.LOG )
+						Log.d(TAG, "button_size: " + button_size);
+					for(View this_view : buttons) {
+						if( this_view.getVisibility() == View.VISIBLE ) {
+							layoutParams = (RelativeLayout.LayoutParams)this_view.getLayoutParams();
+							layoutParams.width = button_size;
+							layoutParams.height = button_size;
+							this_view.setLayoutParams(layoutParams);
+						}
+					}*/
+					int total_button_size = count*button_size;
+					int margin = 0;
+					if( total_button_size > display_height ) {
+						button_size = display_height / count;
+					}
+					else {
+						if( count > 1 )
+							margin = (display_height - total_button_size) / (count-1);
+					}
+					if( MyDebug.LOG ) {
+						Log.d(TAG, "button_size: " + button_size);
+						Log.d(TAG, "total_button_size: " + total_button_size);
+						Log.d(TAG, "margin: " + margin);
+					}
+					for(View this_view : buttons_permanent) {
+						if( this_view.getVisibility() == View.VISIBLE ) {
+							//this_view.setPadding(0, margin/2, 0, margin/2);
+							layoutParams = (RelativeLayout.LayoutParams)this_view.getLayoutParams();
+							// be careful if we change how the margins are laid out: it looks nicer when only the settings icon
+							// is displayed (when taking a photo) if it is still shown left-most, rather than centred; also
+							// needed for "pause preview" trash/icons to be shown properly (test by rotating the phone to update
+							// the layout)
+							layoutParams.setMargins(0, this_view==first_visible_view ? 0 : margin/2, 0, this_view==last_visible_view ? 0 : margin/2);
+							layoutParams.width = button_size;
+							layoutParams.height = button_size;
+							this_view.setLayoutParams(layoutParams);
+						}
+					}
+					top_margin = button_size;
+				}
+			}
+			else {
+				// need to reset size/margins to their default
+				for(View this_view : buttons_permanent) {
+					layoutParams = (RelativeLayout.LayoutParams)this_view.getLayoutParams();
+					layoutParams.setMargins(0, 0, 0, 0);
+					layoutParams.width = button_size;
+					layoutParams.height = button_size;
+					this_view.setLayoutParams(layoutParams);
+				}
+			}
+
+			// end icon panel
 
 			view = main_activity.findViewById(R.id.take_photo);
 			layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
@@ -414,7 +498,13 @@ public class MainUI {
 			}
 			else {
 				width_dp = 250;
+				// prevent being too large on smaller devices (e.g., Galaxy Nexus or smaller)
+				int max_width_dp = getMaxHeightDp(true);
+				if( width_dp > max_width_dp )
+					width_dp = max_width_dp;
 			}
+			if( MyDebug.LOG )
+				Log.d(TAG, "width_dp: " + width_dp);
 			int height_dp = 50;
 			final float scale = main_activity.getResources().getDisplayMetrics().density;
 			int width_pixels = (int) (width_dp * scale + 0.5f); // convert dps to pixels
@@ -458,69 +548,53 @@ public class MainUI {
 
 		if( popupIsOpen() )
 		{
-			View view = main_activity.findViewById(R.id.popup_container);
+			final View view = main_activity.findViewById(R.id.popup_container);
 			RelativeLayout.LayoutParams layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
-			//layoutParams.addRule(left_of, R.id.popup);
-			layoutParams.addRule(align_right, R.id.popup);
-			layoutParams.addRule(below, R.id.popup);
-			layoutParams.addRule(align_parent_bottom, RelativeLayout.TRUE);
-			layoutParams.addRule(above, 0);
-			layoutParams.addRule(align_parent_top, 0);
+			if( ui_placement == UIPlacement.UIPLACEMENT_TOP ) {
+				layoutParams.addRule(align_right, 0);
+				layoutParams.addRule(above, 0);
+				layoutParams.addRule(below, 0);
+				layoutParams.addRule(left_of, 0);
+				layoutParams.addRule(right_of, R.id.popup);
+				layoutParams.addRule(align_parent_top, RelativeLayout.TRUE);
+				layoutParams.addRule(align_parent_bottom, RelativeLayout.TRUE);
+			}
+			else {
+				layoutParams.addRule(align_right, R.id.popup);
+				layoutParams.addRule(above, 0);
+				layoutParams.addRule(below, R.id.popup);
+				layoutParams.addRule(left_of, 0);
+				layoutParams.addRule(right_of, 0);
+				layoutParams.addRule(align_parent_top, 0);
+				layoutParams.addRule(align_parent_bottom, RelativeLayout.TRUE);
+			}
 			view.setLayoutParams(layoutParams);
 
-			setViewRotation(view, ui_rotation);
-			// reset:
-			view.setTranslationX(0.0f);
-			view.setTranslationY(0.0f);
+			//setPopupViewRotation(ui_rotation, display_height);
+			view.getViewTreeObserver().addOnGlobalLayoutListener(
+				new OnGlobalLayoutListener() {
+					@Override
+					public void onGlobalLayout() {
+						if( MyDebug.LOG )
+							Log.d(TAG, "onGlobalLayout()");
+						// We need to call setPopupViewRotation after the above layout param changes
+						// have taken effect, otherwise we can have problems due to popup_height being incorrect.
+						// Example bugs:
+						// Left-handed UI, portrait: Restart and open popup, it doesn't appear until device is rotated.
+						// Top UI, reverse-portrait: Restart and open popup, it appears in wrong location.
+						// Top UI, reverse-landscape: Restart and open popup, it appears in wrong location.
+						setPopupViewRotation(ui_rotation, display_height);
 
-			int popup_width = view.getWidth();
-			int popup_height = view.getHeight();
-			if( MyDebug.LOG ) {
-				Log.d(TAG, "popup_width: " + popup_width);
-				Log.d(TAG, "popup_height: " + popup_height);
-				if( popup_view != null )
-					Log.d(TAG, "popup total width: " + popup_view.getTotalWidth());
-			}
-			if( popup_view != null && popup_width > popup_view.getTotalWidth()*1.2  ) {
-				// This is a workaround for the rare but annoying bug where the popup window is too large
-				// (and appears partially off-screen). Unfortunately have been unable to fix - and trying
-				// to force the popup container to have a particular width just means some of the contents
-				// (e.g., Timer) are missing. But at least stop caching it, so that reopening the popup
-				// should fix it, rather than having to restart or pause/resume Open Camera.
-				// Also note, normally we should expect popup_width == popup_view.getTotalWidth(), but
-				// have put a fudge factor of 1.2 just in case it's normally slightly larger on some
-				// devices.
-				Log.e(TAG, "### popup view is too big?!");
-				force_destroy_popup = true;
-				/*popup_width = popup_view.getTotalWidth();
-				ViewGroup.LayoutParams params = new RelativeLayout.LayoutParams(
-						popup_width,
-						RelativeLayout.LayoutParams.WRAP_CONTENT);
-				view.setLayoutParams(params);*/
-			}
-			else {
-				force_destroy_popup = false;
-			}
-			if( ui_rotation == 0 || ui_rotation == 180 ) {
-				view.setPivotX(popup_width/2.0f);
-				view.setPivotY(popup_height/2.0f);
-			}
-			else {
-				view.setPivotX(popup_width);
-				view.setPivotY(ui_placement_right ? 0.0f : popup_height);
-				if( ui_placement_right ) {
-					if( ui_rotation == 90 )
-						view.setTranslationY( popup_width );
-					else if( ui_rotation == 270 )
-						view.setTranslationX( - popup_height );
+						// stop listening - only want to call this once!
+						if( Build.VERSION.SDK_INT > Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1 ) {
+							view.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+						}
+						else {
+							view.getViewTreeObserver().removeGlobalOnLayoutListener(this);
+						}
+					}
 				}
-				else {
-					if( ui_rotation == 90 )
-						view.setTranslationX( - popup_height );
-					else if( ui_rotation == 270 )
-						view.setTranslationY( - popup_width );
-				}
-			}
+			);
 		}
 
 		if( !popup_container_only ) {
@@ -532,6 +606,77 @@ public class MainUI {
 			Log.d(TAG, "layoutUI: total time: " + (System.currentTimeMillis() - debug_time));
 		}
     }
+
+    private void setPopupViewRotation(int ui_rotation, int display_height) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "setPopupViewRotation");
+		View view = main_activity.findViewById(R.id.popup_container);
+		setViewRotation(view, ui_rotation);
+		// reset:
+		view.setTranslationX(0.0f);
+		view.setTranslationY(0.0f);
+
+		int popup_width = view.getWidth();
+		int popup_height = view.getHeight();
+		test_saved_popup_width = popup_width;
+		test_saved_popup_height = popup_height;
+		if( MyDebug.LOG ) {
+			Log.d(TAG, "popup_width: " + popup_width);
+			Log.d(TAG, "popup_height: " + popup_height);
+			if( popup_view != null )
+				Log.d(TAG, "popup total width: " + popup_view.getTotalWidth());
+		}
+		if( popup_view != null && popup_width > popup_view.getTotalWidth()*1.2  ) {
+			// This is a workaround for the rare but annoying bug where the popup window is too large
+			// (and appears partially off-screen). Unfortunately have been unable to fix - and trying
+			// to force the popup container to have a particular width just means some of the contents
+			// (e.g., Timer) are missing. But at least stop caching it, so that reopening the popup
+			// should fix it, rather than having to restart or pause/resume Open Camera.
+			// Also note, normally we should expect popup_width == popup_view.getTotalWidth(), but
+			// have put a fudge factor of 1.2 just in case it's normally slightly larger on some
+			// devices.
+			Log.e(TAG, "### popup view is too big?!");
+			force_destroy_popup = true;
+			/*popup_width = popup_view.getTotalWidth();
+			ViewGroup.LayoutParams params = new RelativeLayout.LayoutParams(
+					popup_width,
+					RelativeLayout.LayoutParams.WRAP_CONTENT);
+			view.setLayoutParams(params);*/
+		}
+		else {
+			force_destroy_popup = false;
+		}
+
+		if( ui_rotation == 0 || ui_rotation == 180 ) {
+			view.setPivotX(popup_width/2.0f);
+			view.setPivotY(popup_height/2.0f);
+		}
+		else if( ui_placement == UIPlacement.UIPLACEMENT_TOP ) {
+			view.setPivotX(0.0f);
+			view.setPivotY(0.0f);
+			if( ui_rotation == 90 )
+				view.setTranslationX(popup_height);
+			else if( ui_rotation == 270 ) {
+				view.setTranslationY(display_height);
+			}
+		}
+		else {
+			view.setPivotX(popup_width);
+			view.setPivotY(ui_placement == UIPlacement.UIPLACEMENT_RIGHT ? 0.0f : popup_height);
+			if( ui_placement == UIPlacement.UIPLACEMENT_RIGHT ) {
+				if( ui_rotation == 90 )
+					view.setTranslationY( popup_width );
+				else if( ui_rotation == 270 )
+					view.setTranslationX( - popup_height );
+			}
+			else {
+				if( ui_rotation == 90 )
+					view.setTranslationX( - popup_height );
+				else if( ui_rotation == 270 )
+					view.setTranslationY( - popup_width );
+			}
+		}
+	}
 
     /** Set icons for taking photos vs videos.
 	 *  Also handles content descriptions for the take photo button and switch video button.
@@ -611,8 +756,22 @@ public class MainUI {
 		pauseVideoButton.setContentDescription(main_activity.getResources().getString(content_description));
 	}
 
-    public boolean getUIPlacementRight() {
-    	return this.ui_placement_right;
+    public UIPlacement getUIPlacement() {
+    	return this.ui_placement;
+    }
+
+    public void updateRemoteConnectionIcon() {
+        View remoteConnectedIcon = main_activity.findViewById(R.id.kraken_icon);
+        if (main_activity.remoteConnected() ) {
+			if( MyDebug.LOG )
+	            Log.d(TAG, "Remote control connected");
+            remoteConnectedIcon.setVisibility(View.VISIBLE);
+        } else {
+			if( MyDebug.LOG )
+	            Log.d(TAG, "Remote control DISconnected");
+            remoteConnectedIcon.setVisibility(View.GONE);
+        }
+
     }
 
     public void onOrientationChanged(int orientation) {
@@ -642,7 +801,50 @@ public class MainUI {
 		}
 	}
 
-    public void setImmersiveMode(final boolean immersive_mode) {
+	public boolean showExposureLockIcon() {
+		if( !main_activity.getPreview().supportsExposureLock() )
+			return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowExposureLockPreferenceKey, true);
+	}
+
+	public boolean showWhiteBalanceLockIcon() {
+		if( !main_activity.getPreview().supportsWhiteBalanceLock() )
+			return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowWhiteBalanceLockPreferenceKey, false);
+	}
+
+	public boolean showStoreLocationIcon() {
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowStoreLocationPreferenceKey, false);
+	}
+
+	public boolean showTextStampIcon() {
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowTextStampPreferenceKey, false);
+	}
+
+	public boolean showStampIcon() {
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowStampPreferenceKey, false);
+	}
+
+	public boolean showAutoLevelIcon() {
+		if( !main_activity.supportsAutoStabilise() )
+			return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowAutoLevelPreferenceKey, false);
+	}
+
+	public boolean showFaceDetectionIcon() {
+		if( !main_activity.getPreview().supportsFaceDetection() )
+			return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowFaceDetectionPreferenceKey, false);
+	}
+
+	public void setImmersiveMode(final boolean immersive_mode) {
 		if( MyDebug.LOG )
 			Log.d(TAG, "setImmersiveMode: " + immersive_mode);
     	this.immersive_mode = immersive_mode;
@@ -659,6 +861,12 @@ public class MainUI {
 			    View switchVideoButton = main_activity.findViewById(R.id.switch_video);
 			    View exposureButton = main_activity.findViewById(R.id.exposure);
 			    View exposureLockButton = main_activity.findViewById(R.id.exposure_lock);
+				View whiteBalanceLockButton = main_activity.findViewById(R.id.white_balance_lock);
+				View storeLocationButton = main_activity.findViewById(R.id.store_location);
+				View textStampButton = main_activity.findViewById(R.id.text_stamp);
+				View stampButton = main_activity.findViewById(R.id.stamp);
+				View autoLevelButton = main_activity.findViewById(R.id.auto_level);
+				View faceDetectionButton = main_activity.findViewById(R.id.face_detection);
 			    View audioControlButton = main_activity.findViewById(R.id.audio_control);
 			    View popupButton = main_activity.findViewById(R.id.popup);
 			    View galleryButton = main_activity.findViewById(R.id.gallery);
@@ -670,8 +878,20 @@ public class MainUI {
 		    	switchVideoButton.setVisibility(visibility);
 			    if( main_activity.supportsExposureButton() )
 			    	exposureButton.setVisibility(visibility);
-			    if( main_activity.getPreview().supportsExposureLock() )
+			    if( showExposureLockIcon() )
 			    	exposureLockButton.setVisibility(visibility);
+				if( showWhiteBalanceLockIcon() )
+					whiteBalanceLockButton.setVisibility(visibility);
+				if( showStoreLocationIcon() )
+					storeLocationButton.setVisibility(visibility);
+			    if( showTextStampIcon() )
+			    	textStampButton.setVisibility(visibility);
+			    if( showStampIcon() )
+			    	stampButton.setVisibility(visibility);
+			    if( showAutoLevelIcon() )
+			    	autoLevelButton.setVisibility(visibility);
+			    if( showFaceDetectionIcon() )
+			    	faceDetectionButton.setVisibility(visibility);
 			    if( main_activity.hasAudioControl() )
 			    	audioControlButton.setVisibility(visibility);
 		    	popupButton.setVisibility(visibility);
@@ -745,6 +965,12 @@ public class MainUI {
 			    View switchVideoButton = main_activity.findViewById(R.id.switch_video);
 			    View exposureButton = main_activity.findViewById(R.id.exposure);
 			    View exposureLockButton = main_activity.findViewById(R.id.exposure_lock);
+				View whiteBalanceLockButton = main_activity.findViewById(R.id.white_balance_lock);
+				View storeLocationButton = main_activity.findViewById(R.id.store_location);
+				View textStampButton = main_activity.findViewById(R.id.text_stamp);
+				View stampButton = main_activity.findViewById(R.id.stamp);
+				View autoLevelButton = main_activity.findViewById(R.id.auto_level);
+				View faceDetectionButton = main_activity.findViewById(R.id.face_detection);
 			    View audioControlButton = main_activity.findViewById(R.id.audio_control);
 			    View popupButton = main_activity.findViewById(R.id.popup);
 			    if( main_activity.getPreview().getCameraControllerManager().getNumberOfCameras() > 1 )
@@ -752,19 +978,106 @@ public class MainUI {
 				switchVideoButton.setVisibility(visibility);
 			    if( main_activity.supportsExposureButton() )
 			    	exposureButton.setVisibility(visibility_video); // still allow exposure when recording video
-			    if( main_activity.getPreview().supportsExposureLock() )
+			    if( showExposureLockIcon() )
 			    	exposureLockButton.setVisibility(visibility_video); // still allow exposure lock when recording video
+			    if( showWhiteBalanceLockIcon() )
+			    	whiteBalanceLockButton.setVisibility(visibility_video); // still allow white balance lock when recording video
+				if( showStoreLocationIcon() )
+					storeLocationButton.setVisibility(visibility);
+			    if( showTextStampIcon() )
+			    	textStampButton.setVisibility(visibility);
+				if( showStampIcon() )
+					stampButton.setVisibility(visibility);
+			    if( showAutoLevelIcon() )
+			    	autoLevelButton.setVisibility(visibility);
+				if( showFaceDetectionIcon() )
+					faceDetectionButton.setVisibility(visibility);
 			    if( main_activity.hasAudioControl() )
 			    	audioControlButton.setVisibility(visibility);
 			    if( !(show_gui_photo && show_gui_video) ) {
 			    	closePopup(); // we still allow the popup when recording video, but need to update the UI (so it only shows flash options), so easiest to just close
 			    }
+
+                View remoteConnectedIcon = main_activity.findViewById(R.id.kraken_icon);
+                if (main_activity.remoteConnected() ) {
+					if( MyDebug.LOG )
+	                    Log.d(TAG, "Remote control connected");
+                    remoteConnectedIcon.setVisibility(View.VISIBLE);
+                } else {
+					if( MyDebug.LOG )
+	                    Log.d(TAG, "Remote control DISconnected");
+                    remoteConnectedIcon.setVisibility(View.GONE);
+                }
 				popupButton.setVisibility(main_activity.getPreview().supportsFlash() ? visibility_video : visibility); // still allow popup in order to change flash mode when recording video
+
+				if( show_gui_photo && show_gui_video ) {
+		    	    layoutUI(); // needed for "top" UIPlacement, to auto-arrange the buttons
+				}
 			}
 		});
     }
 
-    public void audioControlStarted() {
+	public void updateExposureLockIcon() {
+		ImageButton view = main_activity.findViewById(R.id.exposure_lock);
+		boolean enabled = main_activity.getPreview().isExposureLocked();
+		view.setImageResource(enabled ? R.drawable.exposure_locked : R.drawable.exposure_unlocked);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.exposure_unlock : R.string.exposure_lock) );
+	}
+
+	public void updateWhiteBalanceLockIcon() {
+		ImageButton view = main_activity.findViewById(R.id.white_balance_lock);
+		boolean enabled = main_activity.getPreview().isWhiteBalanceLocked();
+		view.setImageResource(enabled ? R.drawable.white_balance_locked : R.drawable.white_balance_unlocked);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.white_balance_unlock : R.string.white_balance_lock) );
+	}
+
+	public void updateStoreLocationIcon() {
+		ImageButton view = main_activity.findViewById(R.id.store_location);
+		boolean enabled = main_activity.getApplicationInterface().getGeotaggingPref();
+		view.setImageResource(enabled ? R.drawable.ic_gps_fixed_red_48dp : R.drawable.ic_gps_fixed_white_48dp);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.preference_location_disable : R.string.preference_location_enable) );
+	}
+
+	public void updateTextStampIcon() {
+		ImageButton view = main_activity.findViewById(R.id.text_stamp);
+		boolean enabled = !main_activity.getApplicationInterface().getTextStampPref().isEmpty();
+		view.setImageResource(enabled ? R.drawable.baseline_text_fields_red_48 : R.drawable.baseline_text_fields_white_48);
+	}
+
+	public void updateStampIcon() {
+		ImageButton view = main_activity.findViewById(R.id.stamp);
+		boolean enabled = main_activity.getApplicationInterface().getStampPref().equals("preference_stamp_yes");
+		view.setImageResource(enabled ? R.drawable.ic_text_format_red_48dp : R.drawable.ic_text_format_white_48dp);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.stamp_disable : R.string.stamp_enable) );
+	}
+
+	public void updateAutoLevelIcon() {
+		ImageButton view = main_activity.findViewById(R.id.auto_level);
+		boolean enabled = main_activity.getApplicationInterface().getAutoStabilisePref();
+		view.setImageResource(enabled ? R.drawable.auto_stabilise_icon_red : R.drawable.auto_stabilise_icon);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.auto_level_disable : R.string.auto_level_enable) );
+	}
+
+	public void updateFaceDetectionIcon() {
+		ImageButton view = main_activity.findViewById(R.id.face_detection);
+		boolean enabled = main_activity.getApplicationInterface().getFaceDetectionPref();
+		view.setImageResource(enabled ? R.drawable.ic_face_red_48dp : R.drawable.ic_face_white_48dp);
+		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.face_detection_disable : R.string.face_detection_enable) );
+	}
+
+	public void updateOnScreenIcons() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "updateOnScreenIcons");
+		this.updateExposureLockIcon();
+		this.updateWhiteBalanceLockIcon();
+		this.updateStoreLocationIcon();
+		this.updateTextStampIcon();
+		this.updateStampIcon();
+		this.updateAutoLevelIcon();
+		this.updateFaceDetectionIcon();
+	}
+
+	public void audioControlStarted() {
 		ImageButton view = main_activity.findViewById(R.id.audio_control);
 		view.setImageResource(R.drawable.ic_mic_red_48dp);
 		view.setContentDescription( main_activity.getResources().getString(R.string.audio_control_stop) );
@@ -776,7 +1089,7 @@ public class MainUI {
 		view.setContentDescription( main_activity.getResources().getString(R.string.audio_control_start) );
     }
 
-    private boolean isExposureUIOpen() {
+    public boolean isExposureUIOpen() {
 		View exposure_seek_bar = main_activity.findViewById(R.id.exposure_container);
 		int exposure_visibility = exposure_seek_bar.getVisibility();
 		View manual_exposure_seek_bar = main_activity.findViewById(R.id.manual_exposure_container);
@@ -784,16 +1097,388 @@ public class MainUI {
 		return exposure_visibility == View.VISIBLE || manual_exposure_visibility == View.VISIBLE;
 	}
 
+    /**
+     * Opens or close the exposure settings (ISO, white balance, etc)
+     */
     public void toggleExposureUI() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "toggleExposureUI");
 		closePopup();
+        mSelectingExposureUIElement = false;
 		if( isExposureUIOpen() ) {
 			clearSeekBar();
 		}
 		else if( main_activity.getPreview().getCameraController() != null ) {
 			setupExposureUI();
+            if (main_activity.remoteEnabled()) {
+            	initRemoteControlForExposureUI();
+            }
 		}
+    }
+
+    private void initRemoteControlForExposureUI() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "initRemoteControlForExposureUI");
+		if( isExposureUIOpen() ) { // just in case
+			remote_control_mode = true;
+			mExposureLine = 0;
+			highlightExposureUILine(true);
+		}
+	}
+
+	private void clearRemoteControlForExposureUI() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clearRemoteControlForExposureUI");
+		if( isExposureUIOpen() && remote_control_mode ) {
+			remote_control_mode = false;
+			resetExposureUIHighlights();
+		}
+	}
+
+	private void resetExposureUIHighlights() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "resetExposureUIHighlights");
+		ViewGroup iso_buttons_container = main_activity.findViewById(R.id.iso_buttons); // Shown when Camera API2 enabled
+		View exposure_seek_bar = main_activity.findViewById(R.id.exposure_container);
+		View shutter_seekbar = main_activity.findViewById(R.id.exposure_time_seekbar);
+		View iso_seekbar = main_activity.findViewById(R.id.iso_seekbar);
+		View sliders_container = main_activity.findViewById(R.id.sliders_container);
+		View wb_seekbar = main_activity.findViewById(R.id.white_balance_seekbar);
+		// Set all lines to black
+		iso_buttons_container.setBackgroundColor(Color.TRANSPARENT);
+		exposure_seek_bar.setBackgroundColor(Color.TRANSPARENT);
+		shutter_seekbar.setBackgroundColor(Color.TRANSPARENT);
+		iso_seekbar.setBackgroundColor(Color.TRANSPARENT);
+		wb_seekbar.setBackgroundColor(Color.TRANSPARENT);
+	}
+
+	/**
+     * Highlights the relevant line on the Exposure UI based on
+     * the value of mExposureLine
+     *
+     */
+    private void highlightExposureUILine(boolean selectNext) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "highlightExposureUILine: " + selectNext);
+        if (!isExposureUIOpen()) { // Safety check
+            return;
+        }
+        ViewGroup iso_buttons_container = main_activity.findViewById(R.id.iso_buttons); // Shown when Camera API2 enabled
+        View exposure_seek_bar = main_activity.findViewById(R.id.exposure_container);
+        View shutter_seekbar = main_activity.findViewById(R.id.exposure_time_seekbar);
+        View iso_seekbar = main_activity.findViewById(R.id.iso_seekbar);
+        View sliders_container = main_activity.findViewById(R.id.sliders_container);
+        View wb_seekbar = main_activity.findViewById(R.id.white_balance_seekbar);
+        // Our order for lines is:
+        // - ISO buttons
+        // - ISO slider
+        // - Shutter speed
+        // - exposure seek bar
+		if( MyDebug.LOG )
+			Log.d(TAG, "mExposureLine: " + mExposureLine);
+		mExposureLine = ( mExposureLine  + 5 ) % 5;
+		if( MyDebug.LOG )
+			Log.d(TAG, "mExposureLine modulo: " + mExposureLine);
+        if (selectNext) {
+            if (mExposureLine == 0 && !iso_buttons_container.isShown())
+                mExposureLine++;
+            if (mExposureLine == 1 && !iso_seekbar.isShown())
+                mExposureLine++;
+            if (mExposureLine == 2 && !shutter_seekbar.isShown())
+                mExposureLine++;
+            if ((mExposureLine == 3) && !exposure_seek_bar.isShown())
+                mExposureLine++;
+            if ((mExposureLine == 4) && !wb_seekbar.isShown())
+            	mExposureLine++;
+        } else {
+            // Select previous
+			if (mExposureLine == 4 && !wb_seekbar.isShown())
+				mExposureLine--;
+            if (mExposureLine == 3 && !exposure_seek_bar.isShown())
+                mExposureLine--;
+            if (mExposureLine == 2 && !shutter_seekbar.isShown())
+                mExposureLine--;
+			if (mExposureLine == 1 && !iso_seekbar.isShown())
+				mExposureLine--;
+			if (mExposureLine == 0 && !iso_buttons_container.isShown())
+				mExposureLine--;
+        }
+		if( MyDebug.LOG )
+			Log.d(TAG, "after skipping: mExposureLine: " + mExposureLine);
+        mExposureLine = ( mExposureLine  + 5 ) % 5;
+		if( MyDebug.LOG )
+			Log.d(TAG, "after skipping: mExposureLine modulo: " + mExposureLine);
+		resetExposureUIHighlights();
+
+        if (mExposureLine == 0) {
+            iso_buttons_container.setBackgroundColor(highlightColor);
+            //iso_buttons_container.setAlpha(0.5f);
+            return;
+        } else if (mExposureLine == 1) {
+           iso_seekbar.setBackgroundColor(highlightColor);
+           //iso_seekbar.setAlpha(0.5f);
+        } else if (mExposureLine == 2) {
+            shutter_seekbar.setBackgroundColor(highlightColor);
+            //shutter_seekbar.setAlpha(0.5f);
+        } else if (mExposureLine == 3) { //
+			exposure_seek_bar.setBackgroundColor(highlightColor);
+			//exposure_seek_bar.setAlpha(0.5f);
+        } else if (mExposureLine == 4) {
+        	wb_seekbar.setBackgroundColor(highlightColor);
+        	//wb_seekbar.setAlpha(0.5f);
+		}
+    }
+
+    public void nextExposureUILine() {
+        mExposureLine++;
+        highlightExposureUILine(true);
+    }
+
+    public void previousExposureUILine() {
+        mExposureLine--;
+        highlightExposureUILine(false);
+    }
+
+    /**
+     * Our order for lines is:
+     *  -0: ISO buttons
+     *  -1: ISO slider
+     *  -2: Shutter speed
+     *  -3: exposure seek bar
+      */
+    public void nextExposureUIItem() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "nextExposureUIItem");
+        switch (mExposureLine) {
+            case 0:
+                nextIsoItem(false);
+                break;
+            case 1:
+                changeSeekbar(R.id.iso_seekbar, 10);
+                break;
+            case 2:
+                changeSeekbar(R.id.exposure_time_seekbar, 5);
+                break;
+            case 3:
+                changeSeekbar(R.id.exposure_seekbar, 1);
+                break;
+			case 4:
+				changeSeekbar(R.id.white_balance_seekbar, 3);
+				break;
+        }
+    }
+
+    public void previousExposureUIItem() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "previousExposureUIItem");
+        switch (mExposureLine) {
+            case 0:
+                nextIsoItem(true);
+                break;
+            case 1:
+                changeSeekbar(R.id.iso_seekbar, -10);
+                break;
+            case 2:
+                changeSeekbar(R.id.exposure_time_seekbar, -5);
+                break;
+            case 3:
+                changeSeekbar(R.id.exposure_seekbar, -1);
+                break;
+			case 4:
+				changeSeekbar(R.id.white_balance_seekbar, -3);
+				break;
+        }
+    }
+
+    private void nextIsoItem(boolean previous) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "nextIsoItem: " + previous);
+        // Find current ISO
+        final SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+        String current_iso = sharedPreferences.getString(PreferenceKeys.ISOPreferenceKey, CameraController.ISO_DEFAULT);
+        int count = iso_buttons.size();
+        int step = previous ? -1 : 1;
+        boolean found = false;
+        for(int i = 0; i < count; i++) {
+            Button button= (Button) iso_buttons.get(i);
+            String button_text = "" + button.getText();
+            if( button_text.contains(current_iso) ) {
+                found = true;
+                // Select next one, unless it's "Manual", which we skip since
+                // it's not practical in remote mode.
+                Button nextButton = (Button) iso_buttons.get((i + count + step)%count);
+                String nextButton_text = "" + nextButton.getText();
+                if (nextButton_text.contains("m")) {
+                    nextButton = (Button) iso_buttons.get((i+count+ 2*step)%count);
+                }
+                nextButton.callOnClick();
+                break;
+            }
+        }
+        if (!found) {
+            // For instance, we are in ISO manual mode and "M" is selected. default
+            // back to "Auto" to avoid being stuck since we're with a remote control
+            iso_buttons.get(0).callOnClick();
+        }
+    }
+
+    /**
+     * Select element on exposure UI. Based on the value of mExposureLine
+     *         // Our order for lines is:
+     *         // - ISO buttons
+     *         // - ISO slider
+     *         // - Shutter speed
+     *         // - exposure seek bar
+     */
+    public void selectExposureUILine() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "selectExposureUILine");
+        if (!isExposureUIOpen()) { // Safety check
+            return;
+        }
+
+        if (mExposureLine == 0) { // ISO presets
+            ViewGroup iso_buttons_container = main_activity.findViewById(R.id.iso_buttons);
+            iso_buttons_container.setBackgroundColor(highlightColorExposureUIElement);
+            //iso_buttons_container.setAlpha(1f);
+            final SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+            String current_iso = sharedPreferences.getString(PreferenceKeys.ISOPreferenceKey, CameraController.ISO_DEFAULT);
+            // if the manual ISO value isn't one of the "preset" values, then instead highlight the manual ISO icon
+            boolean found = false;
+            Button manualButton = null;
+            for(View view : iso_buttons) {
+                Button button = (Button)view;
+                String button_text = "" + button.getText();
+                if( button_text.contains(current_iso) ) {
+                    PopupView.setButtonSelected(button, true);
+                    //button.setBackgroundColor(highlightColorExposureUIElement);
+                    //button.setAlpha(0.3f);
+                    found = true;
+                }
+                else {
+                    if (button_text.contains("m")) {
+                        manualButton = button;
+                    }
+                    PopupView.setButtonSelected(button, false);
+                    button.setBackgroundColor(Color.TRANSPARENT);
+                }
+            }
+            if (!found && manualButton != null) {
+                // We are in manual ISO, highlight the "M" button
+                PopupView.setButtonSelected(manualButton, true);
+                manualButton.setBackgroundColor(highlightColorExposureUIElement);
+                //manualButton.setAlpha(0.3f);
+            }
+            mSelectingExposureUIElement = true;
+        } else if (mExposureLine == 1) {
+            // ISO seek bar - change color
+            View seek_bar = main_activity.findViewById(R.id.iso_seekbar);
+            //seek_bar.setAlpha(0.1f);
+			seek_bar.setBackgroundColor(highlightColorExposureUIElement);
+            mSelectingExposureUIElement = true;
+        } else if (mExposureLine == 2) {
+            // ISO seek bar - change color
+            View seek_bar = main_activity.findViewById(R.id.exposure_time_seekbar);
+            //seek_bar.setAlpha(0.1f);
+			seek_bar.setBackgroundColor(highlightColorExposureUIElement);
+            mSelectingExposureUIElement = true;
+        } else if (mExposureLine == 3) {
+			// Exposure compensation
+            View container = main_activity.findViewById(R.id.exposure_container);
+            //container.setAlpha(0.1f);
+			container.setBackgroundColor(highlightColorExposureUIElement);
+            mSelectingExposureUIElement = true;
+        } else if (mExposureLine == 4) {
+        	// Manual white balance
+			View container = main_activity.findViewById(R.id.white_balance_seekbar);
+			//container.setAlpha(0.1f);
+			container.setBackgroundColor(highlightColorExposureUIElement);
+			mSelectingExposureUIElement = true;
+		}
+    }
+
+	/** Returns the height of the device in dp (or width in portrait mode), allowing for space for the
+	 *  on-screen UI icons.
+	 * @param centred If true, then find the max height for a view that will be centred.
+	 */
+	int getMaxHeightDp(boolean centred) {
+		Display display = main_activity.getWindowManager().getDefaultDisplay();
+		// ensure we have display for landscape orientation (even if we ever allow Open Camera
+		DisplayMetrics outMetrics = new DisplayMetrics();
+		display.getMetrics(outMetrics);
+
+		// normally we should always have heightPixels < widthPixels, but good not to assume we're running in landscape orientation
+		int smaller_dim = Math.min(outMetrics.widthPixels, outMetrics.heightPixels);
+		// the smaller dimension should limit the width, due to when held in portrait
+		final float scale = main_activity.getResources().getDisplayMetrics().density;
+		int dpHeight = (int)(smaller_dim / scale);
+		if( MyDebug.LOG ) {
+			Log.d(TAG, "display size: " + outMetrics.widthPixels + " x " + outMetrics.heightPixels);
+			Log.d(TAG, "dpHeight: " + dpHeight);
+		}
+		// allow space for the icons at top/right of screen
+		int margin = centred ? 120 : 50;
+		dpHeight -= margin;
+		return dpHeight;
+	}
+
+    public boolean isSelectingExposureUIElement() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "isSelectingExposureUIElement returns:" + mSelectingExposureUIElement);
+        return mSelectingExposureUIElement;
+    }
+
+
+    /**
+     * Process a press to the "Up" button on a remote. Called from MainActivity.
+     * @return true if an action was taken
+     */
+    public boolean processRemoteUpButton() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "processRemoteUpButton");
+        boolean didProcess = false;
+        if (popupIsOpen()) {
+            didProcess = true;
+            if (selectingIcons()) {
+                previousPopupIcon();
+            } else if (selectingLines()) {
+                previousPopupLine();
+            }
+        } else if (isExposureUIOpen()) {
+            didProcess = true;
+            if (isSelectingExposureUIElement()) {
+                nextExposureUIItem();
+            } else {
+                previousExposureUILine();
+            }
+        }
+        return didProcess;
+    }
+
+    /**
+     * Process a press to the "Down" button on a remote. Called from MainActivity.
+     * @return true if an action was taken
+     */
+    public boolean processRemoteDownButton() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "processRemoteDownButton");
+        boolean didProcess = false;
+        if (popupIsOpen()) {
+            if (selectingIcons()) {
+                nextPopupIcon();
+            } else if (selectingLines()) {
+                nextPopupLine();
+            }
+            didProcess = true;
+        } else if (isExposureUIOpen()) {
+            if (isSelectingExposureUIElement()) {
+                previousExposureUIItem();
+            } else {
+                nextExposureUILine();
+            }
+            didProcess = true;
+        }
+        return didProcess;
     }
 
     private List<View> iso_buttons;
@@ -838,8 +1523,17 @@ public class MainUI {
 		// if the manual ISO value isn't one of the "preset" values, then instead highlight the manual ISO icon
 		if( !current_iso.equals(CameraController.ISO_DEFAULT) && supported_isos != null && supported_isos.contains(manual_iso_value) && !supported_isos.contains(current_iso) )
 			current_iso = manual_iso_value;
+
+
+		int total_width_dp = 280;
+		int max_width_dp = getMaxHeightDp(true);
+		if( total_width_dp > max_width_dp )
+			total_width_dp = max_width_dp;
+		if( MyDebug.LOG )
+			Log.d(TAG, "total_width_dp: " + total_width_dp);
+
 		// n.b., we hardcode the string "ISO" as this isn't a user displayed string, rather it's used to filter out "ISO" included in old Camera API parameters
-		iso_buttons = PopupView.createButtonOptions(iso_buttons_container, main_activity, 280, test_ui_buttons, supported_isos, -1, -1, "ISO", false, current_iso, 0, "TEST_ISO", new PopupView.ButtonOptionsPopupListener() {
+		iso_buttons = PopupView.createButtonOptions(iso_buttons_container, main_activity, total_width_dp, test_ui_buttons, supported_isos, -1, -1, "ISO", false, current_iso, 0, "TEST_ISO", new PopupView.ButtonOptionsPopupListener() {
 			@Override
 			public void onClick(String option) {
 				if( MyDebug.LOG )
@@ -911,8 +1605,11 @@ public class MainUI {
 						int iso = preview.parseManualISOValue(option);
 						if( iso >= 0 ) {
 							// if changing between manual ISOs, no need to call updateForSettings, just change the ISO directly (as with changing the ISO via manual slider)
-							preview.setISO(iso);
-							updateSelectedISOButton();
+							//preview.setISO(iso);
+							//updateSelectedISOButton();
+							// rather than set ISO directly, we move the seekbar, and the ISO will be changed via the seekbar listener
+							SeekBar iso_seek_bar = main_activity.findViewById(R.id.iso_seekbar);
+							main_activity.getManualSeekbars().setISOProgressBarToClosest(iso_seek_bar, iso);
 						}
 					}
 				}
@@ -1051,6 +1748,7 @@ public class MainUI {
 	}
 
     public void clearSeekBar() {
+		clearRemoteControlForExposureUI(); // must be called before we actually close the exposure panel
 		View view = main_activity.findViewById(R.id.sliders_container);
 		view.setVisibility(View.GONE);
 		view = main_activity.findViewById(R.id.iso_container);
@@ -1094,6 +1792,9 @@ public class MainUI {
 		if( MyDebug.LOG )
 			Log.d(TAG, "close popup");
 		if( popupIsOpen() ) {
+			clearRemoteControlForPopup(); // must be called before we set popup_view_is_open to false; and before clearSelectionState() so we know which highlighting to disable
+			clearSelectionState();
+
 			popup_view_is_open = false;
 			/* Not destroying the popup doesn't really gain any performance.
 			 * Also there are still outstanding bugs to fix if we wanted to do this:
@@ -1117,8 +1818,16 @@ public class MainUI {
     public boolean popupIsOpen() {
     	return popup_view_is_open;
     }
-    
-    public void destroyPopup() {
+
+	public boolean selectingIcons() {
+		return mSelectingIcons;
+	}
+
+	public boolean selectingLines() {
+		return mSelectingLines;
+	}
+
+	public void destroyPopup() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "destroyPopup");
 		force_destroy_popup = false;
@@ -1130,7 +1839,152 @@ public class MainUI {
 		popup_view = null;
     }
 
-    public void togglePopupSettings() {
+	/**
+	 * Higlights the next LinearLayout view
+	 * @param highlight
+	 */
+	private void highlightPopupLine(boolean highlight, boolean goUp) {
+		if( MyDebug.LOG ) {
+			Log.d(TAG, "highlightPopupLine");
+			Log.d(TAG, "highlight: " + highlight);
+			Log.d(TAG, "goUp: " + goUp);
+		}
+		if (!popupIsOpen()) { // Safety check
+			clearSelectionState();
+			return;
+		}
+		final ViewGroup popup_container = main_activity.findViewById(R.id.popup_container);
+        Rect scrollBounds = new Rect();
+        popup_container.getDrawingRect(scrollBounds);
+        final LinearLayout inside = (LinearLayout) popup_container.getChildAt(0);
+		if (inside == null)
+			return; // Safety check
+		int count = inside.getChildCount();
+		boolean foundLine = false;
+		while (!foundLine) {
+			// Ensure we stay within our bounds:
+			mPopupLine = (mPopupLine + count ) % count;
+			View v = inside.getChildAt(mPopupLine);
+			if (v.isShown() && v instanceof LinearLayout ) {
+				if (highlight) {
+					v.setBackgroundColor(highlightColor);
+					//v.setAlpha(0.3f);
+					if (v.getBottom() > scrollBounds.bottom || v.getTop() < scrollBounds.top)
+                        popup_container.scrollTo(0, v.getTop());
+					mHighlightedLine = (LinearLayout) v;
+				} else {
+					v.setBackgroundColor(Color.TRANSPARENT);
+					v.setAlpha(1f);
+				}
+				foundLine = true;
+			} else {
+				mPopupLine += goUp ? -1 : 1;
+			}
+		}
+		if( MyDebug.LOG )
+			Log.d(TAG,"Current line: " + mPopupLine);
+	}
+
+    /**
+     * Highlights an icon on a horizontal line, such as flash mode,
+     * focus mode, etc. Checks that the popup is open in case it is
+     * wrongly called, so that it doesn't crash the app.
+     * @param highlight
+     * @param goLeft
+     */
+	public void highlightPopupIcon(boolean highlight, boolean goLeft) {
+		if( MyDebug.LOG ) {
+			Log.d(TAG, "highlightPopupIcon");
+			Log.d(TAG, "highlight: " + highlight);
+			Log.d(TAG, "goLeft: " + goLeft);
+		}
+		if (!popupIsOpen()) { // Safety check
+			clearSelectionState();
+			return;
+		}
+		highlightPopupLine(false, false);
+		int count = mHighlightedLine.getChildCount();
+		boolean foundIcon = false;
+		while (!foundIcon) {
+			// Ensure we stay within our bounds:
+			// (careful, modulo in Java will allow negative numbers, hence the line below:
+			mPopupIcon= (mPopupIcon + count ) % count;
+			View v = mHighlightedLine.getChildAt(mPopupIcon);
+			if (v instanceof ImageButton || v instanceof Button ) {
+				if (highlight) {
+					v.setBackgroundColor(highlightColor);
+					//v.setAlpha(0.5f);
+					mHighlightedIcon = v;
+					mSelectingIcons = true;
+				} else {
+					v.setBackgroundColor(Color.TRANSPARENT);
+				}
+				foundIcon = true;
+			} else {
+				mPopupIcon+= goLeft ? -1 : 1;
+			}
+		}
+	}
+
+    /**
+     * Select the next line on the settings popup. Called by MainActivity
+     * when receiving a remote control command.
+     */
+	public void nextPopupLine() {
+		highlightPopupLine(false, false);
+		mPopupLine++;
+		highlightPopupLine(true, false);
+	}
+
+	public void previousPopupLine() {
+		highlightPopupLine(false, true);
+		mPopupLine--;
+		highlightPopupLine(true, true);
+	}
+
+	public void nextPopupIcon() {
+		highlightPopupIcon(false, false);
+		mPopupIcon++;
+		highlightPopupIcon(true, false);
+	}
+
+	public void previousPopupIcon() {
+		highlightPopupIcon(false, true);
+		mPopupIcon--;
+		highlightPopupIcon(true, true);
+	}
+
+    /**
+     * Simulates a press on the currently selected icon
+     */
+	public void clickSelectedIcon() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clickSelectedIcon: " + mHighlightedIcon);
+		if (mHighlightedIcon != null) {
+			mHighlightedIcon.callOnClick();
+		}
+	}
+
+	/**
+	 * Ensure all our selection tracking variables are cleared when we
+	 * exit menu selection (used in remote control mode)
+	 */
+	private void clearSelectionState() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clearSelectionState");
+		mPopupLine = 0;
+		mPopupIcon = 0;
+		mSelectingIcons = false;
+		mSelectingLines = false;
+		mHighlightedIcon= null;
+		mHighlightedLine = null;
+	}
+
+    /**
+     * Opens or closes the settings popup on the camera preview. The popup that
+     * differs depending whether we're in photo or video mode
+     */
+	public void togglePopupSettings() {
 		final ViewGroup popup_container = main_activity.findViewById(R.id.popup_container);
 		if( popupIsOpen() ) {
 			closePopup();
@@ -1170,7 +2024,11 @@ public class MainUI {
 			popup_view.setVisibility(View.VISIBLE);
     	}
 		popup_view_is_open = true;
-		
+
+	    if (main_activity.remoteEnabled()) {
+			initRemoteControlForPopup();
+        }
+
         // need to call layoutUI to make sure the new popup is oriented correctly
 		// but need to do after the layout has been done, so we have a valid width/height to use
 		// n.b., even though we only need the portion of layoutUI for the popup container, there
@@ -1195,10 +2053,30 @@ public class MainUI {
 		            	popup_container.getViewTreeObserver().removeGlobalOnLayoutListener(this);
 		            }
 
-		    		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
-		    		String ui_placement = sharedPreferences.getString(PreferenceKeys.UIPlacementPreferenceKey, "ui_right");
-		    		boolean ui_placement_right = ui_placement.equals("ui_right");
-		            ScaleAnimation animation = new ScaleAnimation(0.0f, 1.0f, 0.0f, 1.0f, Animation.RELATIVE_TO_SELF, 1.0f, Animation.RELATIVE_TO_SELF, ui_placement_right ? 0.0f : 1.0f);
+					UIPlacement ui_placement = computeUIPlacement();
+		            float pivot_x;
+		            float pivot_y;
+		            switch( ui_placement ) {
+						case UIPLACEMENT_TOP:
+							if( main_activity.getPreview().getUIRotation() == 270 ) {
+								pivot_x = 0.0f;
+								pivot_y = 1.0f;
+							}
+							else {
+								pivot_x = 0.0f;
+								pivot_y = 0.0f;
+							}
+							break;
+						case UIPLACEMENT_LEFT:
+							pivot_x = 1.0f;
+							pivot_y = 1.0f;
+							break;
+						default:
+							pivot_x = 1.0f;
+							pivot_y = 0.0f;
+							break;
+					}
+		            ScaleAnimation animation = new ScaleAnimation(0.0f, 1.0f, 0.0f, 1.0f, Animation.RELATIVE_TO_SELF, pivot_x, Animation.RELATIVE_TO_SELF, pivot_y);
 		    		animation.setDuration(100);
 		    		popup_container.setAnimation(animation);
 		        }
@@ -1208,6 +2086,57 @@ public class MainUI {
 		if( MyDebug.LOG )
 			Log.d(TAG, "time to create popup: " + (System.currentTimeMillis() - time_s));
     }
+
+	private void initRemoteControlForPopup() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "initRemoteControlForPopup");
+		if( popupIsOpen() ) { // just in case
+			// For remote control, we want to highlight lines and icons on the popup view
+			// so that we can control those just with the up/down buttons and "OK"
+			clearSelectionState();
+			remote_control_mode = true;
+			mSelectingLines = true;
+			highlightPopupLine(true, false);
+		}
+	}
+
+	private void clearRemoteControlForPopup() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clearRemoteControlForPopup");
+		if( popupIsOpen() && remote_control_mode ) {
+			remote_control_mode = false;
+
+			// reset highlighting
+			final ViewGroup popup_container = main_activity.findViewById(R.id.popup_container);
+			Rect scrollBounds = new Rect();
+			popup_container.getDrawingRect(scrollBounds);
+			final LinearLayout inside = (LinearLayout) popup_container.getChildAt(0);
+			if( inside == null )
+				return; // Safety check
+			View v = inside.getChildAt(mPopupLine);
+			if( v.isShown() && v instanceof LinearLayout ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "reset " + mPopupLine + "th view: " + v);
+				v.setBackgroundColor(Color.TRANSPARENT);
+				v.setAlpha(1f);
+			}
+			if( mHighlightedLine != null ) {
+				v = mHighlightedLine.getChildAt(mPopupIcon);
+				if( v instanceof ImageButton || v instanceof Button ) {
+					v.setBackgroundColor(Color.TRANSPARENT);
+				}
+			}
+			/*for(int i=0;i<inside.getChildCount();i++) {
+				View v = inside.getChildAt(i);
+				if( v.isShown() && v instanceof LinearLayout ) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "reset " + i + "th view: " + v);
+					v.setBackgroundColor(Color.TRANSPARENT);
+					v.setAlpha(1f);
+				}
+			}*/
+		}
+	}
 
 	@SuppressWarnings("deprecation")
 	public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -1342,15 +2271,76 @@ public class MainUI {
 				return true;
 			}
 			case KeyEvent.KEYCODE_ZOOM_IN:
+			case KeyEvent.KEYCODE_PLUS:
+			case KeyEvent.KEYCODE_NUMPAD_ADD:
 			{
 				main_activity.zoomIn();
 				return true;
 			}
 			case KeyEvent.KEYCODE_ZOOM_OUT:
+			case KeyEvent.KEYCODE_MINUS:
+			case KeyEvent.KEYCODE_NUMPAD_SUBTRACT:
 			{
 				main_activity.zoomOut();
 				return true;
 			}
+			case KeyEvent.KEYCODE_SPACE:
+			case KeyEvent.KEYCODE_NUMPAD_5:
+			{
+				if( isExposureUIOpen() && remote_control_mode ) {
+					commandMenuExposure();
+					return true;
+				}
+				else if( popupIsOpen() && remote_control_mode ) {
+					commandMenuPopup();
+					return true;
+				}
+				else if( event.getRepeatCount() == 0 ) {
+					main_activity.takePicture(false);
+					return true;
+				}
+				break;
+			}
+			case KeyEvent.KEYCODE_DPAD_UP:
+			case KeyEvent.KEYCODE_NUMPAD_8:
+			//case KeyEvent.KEYCODE_VOLUME_UP: // test
+				if( !remote_control_mode ) {
+					if( popupIsOpen() ) {
+						initRemoteControlForPopup();
+						return true;
+					}
+					else if( isExposureUIOpen() ) {
+						initRemoteControlForExposureUI();
+						return true;
+					}
+				}
+				else if( processRemoteUpButton() )
+					return true;
+				break;
+			case KeyEvent.KEYCODE_DPAD_DOWN:
+			case KeyEvent.KEYCODE_NUMPAD_2:
+			//case KeyEvent.KEYCODE_VOLUME_DOWN: // test
+				if( !remote_control_mode ) {
+					if( popupIsOpen() ) {
+						initRemoteControlForPopup();
+						return true;
+					}
+					else if( isExposureUIOpen() ) {
+						initRemoteControlForExposureUI();
+						return true;
+					}
+				}
+				else if( processRemoteDownButton() )
+					return true;
+				break;
+			case KeyEvent.KEYCODE_FUNCTION:
+			case KeyEvent.KEYCODE_NUMPAD_MULTIPLY:
+				togglePopupSettings();
+				break;
+			case KeyEvent.KEYCODE_SLASH:
+			case KeyEvent.KEYCODE_NUMPAD_DIVIDE:
+				toggleExposureUI();
+				break;
 		}
 		return false;
 	}
@@ -1362,6 +2352,39 @@ public class MainUI {
 			keydown_volume_up = false;
 		else if( keyCode == KeyEvent.KEYCODE_VOLUME_DOWN )
 			keydown_volume_down = false;
+	}
+
+	/** If the exposure menu is open, selects a current line or option. Else does nothing.
+	 */
+	public void commandMenuExposure() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "commandMenuExposure");
+		if( isExposureUIOpen() ) {
+			if( isSelectingExposureUIElement() ) {
+				// Close Exposure UI if new press on MENU
+				// while already selecting
+				toggleExposureUI();
+			}
+			else {
+				// Select current element in Exposure UI
+				selectExposureUILine();
+			}
+		}
+	}
+
+	/** If the popup menu is open, selects a current line or option. Else does nothing.
+	 */
+	public void commandMenuPopup() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "commandMenuPopup");
+		if( popupIsOpen() ) {
+			if( selectingIcons() ) {
+				clickSelectedIcon();
+			}
+			else {
+				highlightPopupIcon(true, false);
+			}
+		}
 	}
 
 	/** Shows an information dialog, with a button to request not to show again.
@@ -1392,7 +2415,7 @@ public class MainUI {
         });
 
 		main_activity.showPreview(false);
-		main_activity.setWindowFlagsForSettings();
+		main_activity.setWindowFlagsForSettings(false); // set set_lock_protect to false, otherwise if screen is locked, user will need to unlock to see the info dialog!
 
 		AlertDialog alert = alertDialog.create();
 		// AlertDialog.Builder.setOnDismissListener() requires API level 17, so do it this way instead
@@ -1635,6 +2658,10 @@ public class MainUI {
 			entry = value;
 		}
 		return entry;
+	}
+
+	int getTopMargin() {
+		return this.top_margin;
 	}
 
     // for testing

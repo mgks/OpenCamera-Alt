@@ -71,62 +71,6 @@
         <item>120</item>
         <item>300</item>
     </string-array>
-    <string-array name="preference_burst_mode_entries">
-        <item>Off</item>
-        <item>2x</item>
-        <item>3x</item>
-        <item>4x</item>
-        <item>5x</item>
-        <item>10x</item>
-        <item>Illimitato</item>
-    </string-array>
-    <string-array name="preference_burst_mode_values">
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>4</item>
-        <item>5</item>
-        <item>10</item>
-        <item>unlimited</item>
-    </string-array>
-    <string-array name="preference_burst_interval_entries">
-        <item>Nessun intervallo</item>
-        <item>1s</item>
-        <item>2s</item>
-        <item>3s</item>
-        <item>5s</item>
-        <item>10s</item>
-        <item>15s</item>
-        <item>20s</item>
-        <item>30s</item>
-        <item>1m</item>
-        <item>2m</item>
-        <item>5m</item>
-        <item>10m</item>
-        <item>20m</item>
-		<item>30m</item>
-		<item>1h</item>
-		<item>2h</item>
-    </string-array>
-    <string-array name="preference_burst_interval_values">
-        <item>0</item>
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>5</item>
-        <item>10</item>
-        <item>15</item>
-        <item>20</item>
-        <item>30</item>
-        <item>60</item>
-        <item>120</item>
-        <item>300</item>
-        <item>600</item>
-        <item>1200</item>
-        <item>1800</item>
-        <item>3600</item>
-        <item>7200</item>
-    </string-array>
     <string-array name="preference_preview_size_entries">
         <item>Anteprima aumentata al massimo</item>
         <item>Anteprima uguale alla foto scattata (WYSIWYG)</item>
@@ -170,14 +114,6 @@
     <string-array name="preference_rotate_preview_values">
         <item>0</item>
         <item>180</item>
-    </string-array>
-    <string-array name="preference_ui_placement_entries">
-        <item>Interfaccia utente mancini</item>
-        <item>Interfaccia utente destrorsi</item>
-    </string-array>
-    <string-array name="preference_ui_placement_values">
-        <item>ui_left</item>
-        <item>ui_right</item>
     </string-array>
     <string-array name="preference_immersive_mode_entries">
         <item>Off</item>
@@ -235,32 +171,6 @@
         <item>preference_grid_golden_triangle_2</item>
         <item>preference_grid_diagonals</item>
     </string-array>
-    <string-array name="preference_crop_guide_entries">
-        <item>Nessuna</item>
-        <item>1 (1:1)</item>
-        <item>1.25 (5:4)</item>
-        <item>1.33 (4:3)</item>
-        <item>1.4 (7:4)</item>
-        <item>1.5 (3:2)</item>
-        <item>1.78 (16:9)</item>
-        <item>1.85 (37:20)</item>
-        <item>2.33 (21:9)</item>
-        <item>2.35 (47:20)</item>
-        <item>2.4 (12:5)</item>
-    </string-array>
-    <string-array name="preference_crop_guide_values">
-        <item>crop_guide_none</item>
-        <item>crop_guide_1</item>
-        <item>crop_guide_1.25</item>
-        <item>crop_guide_1.33</item>
-        <item>crop_guide_1.4</item>
-        <item>crop_guide_1.5</item>
-        <item>crop_guide_1.78</item>
-        <item>crop_guide_1.85</item>
-        <item>crop_guide_2.33</item>
-        <item>crop_guide_2.35</item>
-        <item>crop_guide_2.4</item>
-        </string-array>
     <string-array name="preference_stamp_entries">
         <item>No timbro</item>
         <item>Timbro foto</item>
@@ -372,38 +282,6 @@
         <item>none</item>
         <item>noise</item>
         <item>voice</item>
-    </string-array>
-    <string-array name="preference_audio_noise_control_sensitivity_entries">
-        <item>+3 (alta sensibilità)</item>
-        <item>+2</item>
-        <item>+1</item>
-        <item>0 (default)</item>
-        <item>-1</item>
-        <item>-2 (bassa sensibilità)</item>
-    </string-array>
-    <string-array name="preference_audio_noise_control_sensitivity_values">
-        <item>3</item>
-        <item>2</item>
-        <item>1</item>
-        <item>0</item>
-        <item>-1</item>
-        <item>-2</item>
-    </string-array>
-    <string-array name="preference_video_max_filesize_entries">
-        <item>Default dispositivo</item>
-        <item>100MB</item>
-        <item>200MB</item>
-        <item>300MB</item>
-        <item>500MB</item>
-        <item>1GB</item>
-    </string-array>
-    <string-array name="preference_video_max_filesize_values">
-        <item>0</item>
-        <item>104857600</item>
-        <item>209715200</item>
-        <item>314572800</item>
-        <item>524288000</item>
-        <item>1073741824</item>
     </string-array>
     <string-array name="preference_save_zulu_time_entries">
         <item>Orario locale</item>

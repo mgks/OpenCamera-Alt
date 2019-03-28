@@ -71,62 +71,6 @@
         <item>120</item>
         <item>300</item>
     </string-array>
-    <string-array name="preference_burst_mode_entries">
-        <item>Bağla</item>
-        <item>2x</item>
-        <item>3x</item>
-        <item>4x</item>
-        <item>5x</item>
-        <item>10x</item>
-        <item>Sonsuz</item>
-    </string-array>
-    <string-array name="preference_burst_mode_values">
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>4</item>
-        <item>5</item>
-        <item>10</item>
-        <item>unlimited</item>
-    </string-array>
-    <string-array name="preference_burst_interval_entries">
-        <item>Fasiləsiz</item>
-        <item>1 saniyə</item>
-        <item>2 saniyə</item>
-        <item>3 saniyə</item>
-        <item>5 saniyə</item>
-        <item>10 saniyə</item>
-        <item>15 saniyə</item>
-        <item>20 saniyə</item>
-        <item>30 saniyə</item>
-        <item>1 dəqiqə</item>
-        <item>2 dəqiqə</item>
-        <item>5 dəqiqə</item>
-        <item>10 dəqiqə</item>
-        <item>20 dəqiqə</item>
-		<item>30 dəqiqə</item>
-		<item>1 saat</item>
-		<item>2 saat</item>
-    </string-array>
-    <string-array name="preference_burst_interval_values">
-        <item>0</item>
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>5</item>
-        <item>10</item>
-        <item>15</item>
-        <item>20</item>
-        <item>30</item>
-        <item>60</item>
-        <item>120</item>
-        <item>300</item>
-        <item>600</item>
-        <item>1200</item>
-        <item>1800</item>
-        <item>3600</item>
-        <item>7200</item>
-    </string-array>
     <string-array name="preference_preview_size_entries">
         <item>Maksimum ön baxış ölçüsü</item>
         <item>Şəkil ölçüsü (WYSIWYG)</item>
@@ -160,14 +104,6 @@
     <string-array name="preference_rotate_preview_values">
         <item>0</item>
         <item>180</item>
-    </string-array>
-    <string-array name="preference_ui_placement_entries">
-        <item>Sol əllə işləyənlər üçün</item>
-        <item>Sağ əllə işləyənlər üçün</item>
-    </string-array>
-    <string-array name="preference_ui_placement_values">
-        <item>ui_left</item>
-        <item>ui_right</item>
     </string-array>
     <string-array name="preference_immersive_mode_entries">
         <item>Bağla</item>
@@ -208,32 +144,6 @@
         <item>preference_grid_golden_triangle_1</item>
         <item>preference_grid_golden_triangle_2</item>
         <item>preference_grid_diagonals</item>
-    </string-array>
-    <string-array name="preference_crop_guide_entries">
-        <item>Yox</item>
-        <item>1 (1:1)</item>
-        <item>1.25 (5:4)</item>
-        <item>1.33 (4:3)</item>
-        <item>1.4 (7:4)</item>
-        <item>1.5 (3:2)</item>
-        <item>1.78 (16:9)</item>
-        <item>1.85 (37:20)</item>
-        <item>2.33 (21:9)</item>
-        <item>2.35 (47:20)</item>
-        <item>2.4 (12:5)</item>
-    </string-array>
-    <string-array name="preference_crop_guide_values">
-        <item>crop_guide_none</item>
-        <item>crop_guide_1</item>
-        <item>crop_guide_1.25</item>
-        <item>crop_guide_1.33</item>
-        <item>crop_guide_1.4</item>
-        <item>crop_guide_1.5</item>
-        <item>crop_guide_1.78</item>
-        <item>crop_guide_1.85</item>
-        <item>crop_guide_2.33</item>
-        <item>crop_guide_2.35</item>
-        <item>crop_guide_2.4</item>
     </string-array>
     <string-array name="preference_stamp_entries">
         <item>Möhürsüz</item>

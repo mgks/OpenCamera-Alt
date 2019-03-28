@@ -71,62 +71,6 @@
         <item>120</item>
         <item>300</item>
     </string-array>
-    <string-array name="preference_burst_mode_entries">
-        <item>Ki</item>
-        <item>2x</item>
-        <item>3x</item>
-        <item>4x</item>
-        <item>5x</item>
-        <item>10x</item>
-        <item>Korlátlan</item>
-    </string-array>
-    <string-array name="preference_burst_mode_values">
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>4</item>
-        <item>5</item>
-        <item>10</item>
-        <item>unlimited</item>
-    </string-array>
-    <string-array name="preference_burst_interval_entries">
-        <item>Nincs késleltetés</item>
-        <item>1mp</item>
-        <item>2mp</item>
-        <item>3mp</item>
-        <item>5mp</item>
-        <item>10mp</item>
-        <item>15mp</item>
-        <item>20mp</item>
-        <item>30mp</item>
-        <item>1p</item>
-        <item>2p</item>
-        <item>5p</item>
-        <item>10p</item>
-        <item>20p</item>
-        <item>30p</item>
-        <item>1ó</item>
-        <item>2ó</item>
-    </string-array>
-    <string-array name="preference_burst_interval_values">
-        <item>0</item>
-        <item>1</item>
-        <item>2</item>
-        <item>3</item>
-        <item>5</item>
-        <item>10</item>
-        <item>15</item>
-        <item>20</item>
-        <item>30</item>
-        <item>60</item>
-        <item>120</item>
-        <item>300</item>
-        <item>600</item>
-        <item>1200</item>
-        <item>1800</item>
-        <item>3600</item>
-        <item>7200</item>
-    </string-array>
     <string-array name="preference_preview_size_entries">
         <item>Előnézet méretének maximalizálása</item>
         <item>Fotóméret illesztése (WYSIWYG)</item>
@@ -170,14 +114,6 @@
     <string-array name="preference_rotate_preview_values">
         <item>0</item>
         <item>180</item>
-    </string-array>
-    <string-array name="preference_ui_placement_entries">
-        <item>Balkezes felhasználói felület</item>
-        <item>Jobbkezes felhasználói felület</item>
-    </string-array>
-    <string-array name="preference_ui_placement_values">
-        <item>ui_left</item>
-        <item>ui_right</item>
     </string-array>
     <string-array name="preference_immersive_mode_entries">
         <item>Ki</item>
@@ -234,32 +170,6 @@
         <item>preference_grid_golden_triangle_1</item>
         <item>preference_grid_golden_triangle_2</item>
         <item>preference_grid_diagonals</item>
-    </string-array>
-    <string-array name="preference_crop_guide_entries">
-        <item>Nincs</item>
-        <item>1 (1:1)</item>
-        <item>1.25 (5:4)</item>
-        <item>1.33 (4:3)</item>
-        <item>1.4 (7:4)</item>
-        <item>1.5 (3:2)</item>
-        <item>1.78 (16:9)</item>
-        <item>1.85 (37:20)</item>
-        <item>2.33 (21:9)</item>
-        <item>2.35 (47:20)</item>
-        <item>2.4 (12:5)</item>
-    </string-array>
-    <string-array name="preference_crop_guide_values">
-        <item>crop_guide_none</item>
-        <item>crop_guide_1</item>
-        <item>crop_guide_1.25</item>
-        <item>crop_guide_1.33</item>
-        <item>crop_guide_1.4</item>
-        <item>crop_guide_1.5</item>
-        <item>crop_guide_1.78</item>
-        <item>crop_guide_1.85</item>
-        <item>crop_guide_2.33</item>
-        <item>crop_guide_2.35</item>
-        <item>crop_guide_2.4</item>
     </string-array>
     <string-array name="preference_stamp_entries">
         <item>Nincs felirat</item>
@@ -372,38 +282,6 @@
         <item>none</item>
         <item>noise</item>
         <item>voice</item>
-    </string-array>
-    <string-array name="preference_audio_noise_control_sensitivity_entries">
-        <item>+3 (nagy érzékenység)</item>
-        <item>+2</item>
-        <item>+1</item>
-        <item>0 (alapértelmezett)</item>
-        <item>-1</item>
-        <item>-2 (alacsony érzékenység)</item>
-    </string-array>
-    <string-array name="preference_audio_noise_control_sensitivity_values">
-        <item>3</item>
-        <item>2</item>
-        <item>1</item>
-        <item>0</item>
-        <item>-1</item>
-        <item>-2</item>
-    </string-array>
-    <string-array name="preference_video_max_filesize_entries">
-        <item>Készülék alapértelmezett</item>
-        <item>100MB</item>
-        <item>200MB</item>
-        <item>300MB</item>
-        <item>500MB</item>
-        <item>1GB</item>
-    </string-array>
-    <string-array name="preference_video_max_filesize_values">
-        <item>0</item>
-        <item>104857600</item>
-        <item>209715200</item>
-        <item>314572800</item>
-        <item>524288000</item>
-        <item>1073741824</item>
     </string-array>
     <string-array name="preference_save_zulu_time_entries">
         <item>Helyi idő</item>
