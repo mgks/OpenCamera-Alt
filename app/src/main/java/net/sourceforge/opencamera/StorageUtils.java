@@ -1,6 +1,7 @@
 package net.sourceforge.opencamera;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -23,6 +24,8 @@ import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
+import android.os.StatFs;
 import android.preference.PreferenceManager;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
@@ -30,7 +33,11 @@ import android.provider.MediaStore.Images;
 import android.provider.MediaStore.Video;
 import android.provider.MediaStore.Images.ImageColumns;
 import android.provider.MediaStore.Video.VideoColumns;
+import android.support.annotation.RequiresApi;
 import android.support.v4.content.ContextCompat;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.StructStatVfs;
 import android.util.Log;
 
 /** Provides access to the filesystem. Supports both standard and Storage
@@ -496,6 +503,10 @@ public class StorageUtils {
 		catch(IllegalArgumentException e) {
 			e.printStackTrace();
 		}
+		catch(SecurityException e) {
+			// have received crashes from Google Play for this
+			e.printStackTrace();
+		}
 		finally {
 			if (cursor != null)
 				cursor.close();
@@ -907,4 +918,87 @@ public class StorageUtils {
 			Log.d(TAG, "return latest media: " + media);
 		return media;
     }
+
+	// only valid if isUsingSAF()
+	@RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    private long freeMemorySAF() {
+		Uri treeUri = applicationInterface.getStorageUtils().getTreeUriSAF();
+		if( MyDebug.LOG )
+			Log.d(TAG, "treeUri: " + treeUri);
+		try {
+			Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri));
+			if( MyDebug.LOG )
+				Log.d(TAG, "docUri: " + docUri);
+			ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(docUri, "r");
+			if( pfd == null ) { // just in case
+				Log.e(TAG, "pfd is null!");
+				throw new FileNotFoundException();
+			}
+			if( MyDebug.LOG )
+				Log.d(TAG, "read direct from SAF uri");
+			StructStatVfs statFs = Os.fstatvfs(pfd.getFileDescriptor());
+			long blocks = statFs.f_bavail;
+			long size = statFs.f_bsize;
+			return (blocks*size) / 1048576;
+		}
+		catch(IllegalArgumentException e) {
+			// IllegalArgumentException can be thrown by DocumentsContract.getTreeDocumentId or getContentResolver().openFileDescriptor
+			e.printStackTrace();
+		}
+		catch(FileNotFoundException e) {
+			e.printStackTrace();
+		}
+		catch(Exception e) {
+			// We actually just want to catch ErrnoException here, but that isn't available pre-Android 5, and trying to catch ErrnoException
+			// means we crash on pre-Android 5 with java.lang.VerifyError when trying to create the StorageUtils class!
+			// One solution might be to move this method to a separate class that's only created on Android 5+, but this is a quick fix for
+			// now.
+			e.printStackTrace();
+		}
+		return -1;
+	}
+
+	/** Return free memory in MB, or -1 if this was unable to be found.
+	 */
+	public long freeMemory() { // return free memory in MB
+		if( MyDebug.LOG )
+			Log.d(TAG, "freeMemory");
+		if( applicationInterface.getStorageUtils().isUsingSAF() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP ) {
+			// if we fail for SAF, don't fall back to the methods below, as this may be incorrect (especially for external SD card)
+			return freeMemorySAF();
+		}
+		try {
+			File folder = getImageFolder();
+			if( folder == null ) {
+				throw new IllegalArgumentException(); // so that we fall onto the backup
+			}
+			StatFs statFs = new StatFs(folder.getAbsolutePath());
+			// cast to long to avoid overflow!
+			long blocks = statFs.getAvailableBlocks();
+			long size = statFs.getBlockSize();
+			return (blocks*size) / 1048576;
+		}
+		catch(IllegalArgumentException e) {
+			// this can happen if folder doesn't exist, or don't have read access
+			// if the save folder is a subfolder of DCIM, we can just use that instead
+			try {
+				if( !isUsingSAF() ) {
+					// getSaveLocation() only valid if !isUsingSAF()
+					String folder_name = getSaveLocation();
+					if( !folder_name.startsWith("/") ) {
+						File folder = getBaseFolder();
+						StatFs statFs = new StatFs(folder.getAbsolutePath());
+						// cast to long to avoid overflow!
+						long blocks = statFs.getAvailableBlocks();
+						long size = statFs.getBlockSize();
+						return (blocks*size) / 1048576;
+					}
+				}
+			}
+			catch(IllegalArgumentException e2) {
+				// just in case
+			}
+		}
+		return -1;
+	}
 }

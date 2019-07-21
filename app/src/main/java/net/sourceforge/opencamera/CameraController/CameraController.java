@@ -42,9 +42,10 @@ public abstract class CameraController {
 	public static final int N_IMAGES_NR_DARK_LOW_LIGHT = 15;
 
 	// for testing:
-	int count_camera_parameters_exception;
-	public int count_precapture_timeout;
-	public boolean test_wait_capture_result; // whether to test delayed capture result in Camera2 API
+	volatile int count_camera_parameters_exception;
+	public volatile int count_precapture_timeout;
+	public volatile boolean test_wait_capture_result; // whether to test delayed capture result in Camera2 API
+	public volatile boolean test_release_during_photo; // for Camera2 API, will force takePictureAfterPrecapture() to call release() on UI thread
 	public volatile int test_capture_results; // for Camera2 API, how many capture requests completed with RequestTagType.CAPTURE
 	public volatile int test_fake_flash_focus; // for Camera2 API, records torch turning on for fake flash during autofocus
 	public volatile int test_fake_flash_precapture; // for Camera2 API, records torch turning on for fake flash during precapture
@@ -222,7 +223,9 @@ public abstract class CameraController {
 	public interface FaceDetectionListener {
 		void onFaceDetection(Face[] faces);
 	}
-	
+
+	/** Interface to define callbacks related to taking photos. These callbacks are all called on the UI thread.
+	 */
 	public interface PictureCallback {
 		void onStarted(); // called immediately before we start capturing the picture
 		void onCompleted(); // called after all relevant on*PictureTaken() callbacks have been called and returned
@@ -234,21 +237,30 @@ public abstract class CameraController {
 		/** Only called if burst is requested.
 		 */
 		void onBurstPictureTaken(List<byte[]> images);
+		/** Only called if burst is requested.
+		 */
+		void onRawBurstPictureTaken(List<RawImage> raw_images);
 		/* This is called for flash_frontscreen_auto or flash_frontscreen_on mode to indicate the caller should light up the screen
 		 * (for flash_frontscreen_auto it will only be called if the scene is considered dark enough to require the screen flash).
 		 * The screen flash can be removed when or after onCompleted() is called.
 		 */
 		/* This is called for when burst mode is BURSTTYPE_FOCUS or BURSTTYPE_CONTINUOUS, to ask whether it's safe to take
-		 * n_jpegs extra images, or whether to wait.
+		 * n_raw extra RAW images and n_jpegs extra JPEG images, or whether to wait.
 		 */
-		boolean imageQueueWouldBlock(int n_jpegs);
+		boolean imageQueueWouldBlock(int n_raw, int n_jpegs);
 		void onFrontScreenTurnOn();
 	}
-	
+
+	/** Interface to define callback for autofocus completing. This callback may be called on the UI thread (CameraController1)
+	 *  or a background thread (CameraController2).
+	 */
 	public interface AutoFocusCallback {
 		void onAutoFocus(boolean success);
 	}
-	
+
+	/** Interface to define callback for continuous focus starting/stopping. This callback may be called on the
+	 *  UI thread (CameraController1) or a background thread (CameraController2).
+	 */
 	public interface ContinuousFocusMoveCallback {
 		void onContinuousFocusMove(boolean start);
 	}

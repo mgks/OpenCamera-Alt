@@ -93,7 +93,7 @@ public interface ApplicationInterface {
 	int getZoomPref(); // index into Preview.getSupportedZoomRatios() array (each entry is the zoom factor, scaled by 100; array is sorted from min to max zoom)
 	double getCalibratedLevelAngle(); // set to non-zero to calibrate the accelerometer used for the level angles
 	boolean canTakeNewPhoto(); // whether taking new photos is allowed (e.g., can return false if queue for processing images would become full)
-	boolean imageQueueWouldBlock(boolean has_raw, int n_jpegs); // called during some burst operations, whether we can allow taking the supplied number of extra photos
+	boolean imageQueueWouldBlock(int n_raw, int n_jpegs); // called during some burst operations, whether we can allow taking the supplied number of extra photos
 	// Camera2 only modes:
 	long getExposureTimePref(); // only called if getISOPref() is not "default"
 	float getFocusDistancePref(boolean is_target_distance);
@@ -121,6 +121,7 @@ public interface ApplicationInterface {
 	boolean useCamera2FakeFlash(); // whether to enable CameraController.setUseCamera2FakeFlash() for Camera2 API
 	boolean useCamera2FastBurst(); // whether to enable Camera2's captureBurst() for faster taking of expo-bracketing photos (generally should be true, but some devices have problems with captureBurst())
 	boolean usePhotoVideoRecording(); // whether to enable support for taking photos when recording video (if not supported, this won't be called)
+	boolean isPreviewInBackground(); // if true, then Preview can disable real-time effects (e.g., computing histogram)
 
 	// for testing purposes:
 	boolean isTestAlwaysFocus(); // if true, pretend autofocus always successful
@@ -148,7 +149,6 @@ public interface ApplicationInterface {
 	void timerBeep(long remaining_time); // n.b., called once per second on timer countdown - so application can beep, or do whatever it likes
 
 	// methods that request actions
-	void layoutUI(); // application should layout UI that's on top of the preview
 	void multitouchZoom(int new_zoom); // indicates that the zoom has changed due to multitouch gesture on preview
 	// the set/clear*Pref() methods are called if Preview decides to override the requested pref (because Camera device doesn't support requested pref) (clear*Pref() is called if the feature isn't supported at all)
 	// the application can use this information to update its preferences
@@ -184,6 +184,7 @@ public interface ApplicationInterface {
 	boolean onPictureTaken(byte [] data, Date current_date);
 	boolean onBurstPictureTaken(List<byte []> images, Date current_date);
 	boolean onRawPictureTaken(RawImage raw_image, Date current_date);
+	boolean onRawBurstPictureTaken(List<RawImage> raw_images, Date current_date);
 	void onCaptureStarted(); // called immediately before we start capturing the picture
 	void onPictureCompleted(); // called after all picture callbacks have been called and returned
 	void onContinuousFocusMove(boolean start); // called when focusing starts/stop in continuous picture mode (in photo mode only)

@@ -1,8 +1,10 @@
 package net.sourceforge.opencamera.Preview;
 
 import net.sourceforge.opencamera.CameraController.RawImage;
+//import net.sourceforge.opencamera.MainActivity;
 import net.sourceforge.opencamera.MyDebug;
 import net.sourceforge.opencamera.R;
+import net.sourceforge.opencamera.ScriptC_histogram_compute;
 import net.sourceforge.opencamera.TakePhoto;
 import net.sourceforge.opencamera.ToastBoxer;
 import net.sourceforge.opencamera.CameraController.CameraController;
@@ -19,7 +21,10 @@ import net.sourceforge.opencamera.Preview.CameraSurface.MyTextureView;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+//import java.io.FileOutputStream;
 import java.io.IOException;
+//import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +46,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
@@ -59,9 +65,16 @@ import android.os.AsyncTask;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+//import android.os.Environment;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
+import android.renderscript.Allocation;
+import android.renderscript.Element;
+import android.renderscript.RSInvalidStateException;
+import android.renderscript.RenderScript;
+import android.renderscript.Type;
+import android.support.annotation.RequiresApi;
 import android.support.v4.content.ContextCompat;
 import android.util.Log;
 import android.util.Pair;
@@ -103,7 +116,35 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 	private boolean set_textureview_size;
 	private int textureview_w, textureview_h;
 
-    private final Matrix camera_to_preview_matrix = new Matrix();
+	private RenderScript rs; // lazily created, so we don't take up resources if application isn't using renderscript
+	private ScriptC_histogram_compute histogramScript; // lazily create for performance
+	private boolean want_preview_bitmap; // whether application has requested we generate bitmap for the preview
+	private Bitmap preview_bitmap;
+	private long last_preview_bitmap_time_ms; // time the last preview_bitmap was updated
+	private RefreshPreviewBitmapTask refreshPreviewBitmapTask;
+
+	private boolean want_histogram; // whether to generate a histogram, requires want_preview_bitmap==true
+	public enum HistogramType {
+		HISTOGRAM_TYPE_RGB,
+		HISTOGRAM_TYPE_LUMINANCE,
+		HISTOGRAM_TYPE_VALUE,
+		HISTOGRAM_TYPE_INTENSITY,
+		HISTOGRAM_TYPE_LIGHTNESS
+	}
+	private HistogramType histogram_type = HistogramType.HISTOGRAM_TYPE_VALUE;
+	private int [] histogram;
+	private long last_histogram_time_ms; // time the last histogram was updated
+
+	private boolean want_zebra_stripes; // whether to generate zebra stripes bitmap, requires want_preview_bitmap==true
+	private int zebra_stripes_threshold; // pixels with max rgb value equal to or greater than this threshold are marked with zebra stripes
+	private Bitmap zebra_stripes_bitmap_buffer;
+	private Bitmap zebra_stripes_bitmap;
+
+	private boolean want_focus_peaking; // whether to generate focus peaking bitmap, requires want_preview_bitmap==true
+	private Bitmap focus_peaking_bitmap_buffer;
+	private Bitmap focus_peaking_bitmap;
+
+	private final Matrix camera_to_preview_matrix = new Matrix();
     private final Matrix preview_to_camera_matrix = new Matrix();
     private double preview_targetRatio;
 
@@ -728,9 +769,6 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 				Log.d(TAG, "camera not opened!");
             return;
         }
-        
-		// need to force a layoutUI update (e.g., so UI is oriented correctly when app goes idle, device is then rotated, and app is then resumed)
-        applicationInterface.layoutUI();
     }
     
 	@Override
@@ -794,10 +832,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		this.textureview_h = height;
 		mySurfaceChanged();
 		configureTransform();
+		recreatePreviewBitmap();
 	}
 
 	@Override
 	public void onSurfaceTextureUpdated(SurfaceTexture arg0) {
+		refreshPreviewBitmap();
 	}
 
     private void configureTransform() { 
@@ -4346,16 +4386,16 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		return features;
 	}
 
-	public void updateFlash(String focus_value) {
+	public void updateFlash(String flash_value) {
 		if( MyDebug.LOG )
-			Log.d(TAG, "updateFlash(): " + focus_value);
+			Log.d(TAG, "updateFlash(): " + flash_value);
 		if( this.phase == PHASE_TAKING_PHOTO && !is_video ) {
 			// just to be safe - risk of cancelling the autofocus before taking a photo, or otherwise messing things up
 			if( MyDebug.LOG )
 				Log.d(TAG, "currently taking a photo");
 			return;
 		}
-		updateFlash(focus_value, true);
+		updateFlash(flash_value, true);
 	}
 
 	private boolean updateFlash(String flash_value, boolean save) {
@@ -4371,6 +4411,20 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 	    	}
 		}
     	return false;
+	}
+
+	public void cycleFlash(boolean skip_torch, boolean save) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "cycleFlash()");
+		if( supported_flash_values != null ) {
+			int new_flash_index = (current_flash_index+1) % supported_flash_values.size();
+			if( supported_flash_values.get(new_flash_index).equals("flash_torch") ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "cycle past torch");
+				new_flash_index = (new_flash_index+1) % supported_flash_values.size();
+			}
+			updateFlash(new_flash_index, save);
+		}
 	}
 	
 	private void updateFlash(int new_flash_index, boolean save) {
@@ -5312,6 +5366,15 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		if( MyDebug.LOG )
 			Log.d(TAG, "video recorder started");
 		video_recorder_is_paused = false;
+
+		if( this.using_face_detection && !this.using_android_l ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "restart face detection");
+			// doing MediaRecorder.start() seems to stop face detection on old Camera API
+			camera_controller.startFaceDetection();
+			faces_detected = null;
+		}
+
 		if( test_video_failure ) {
 			if( MyDebug.LOG )
 				Log.d(TAG, "test_video_failure is true");
@@ -5471,20 +5534,31 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		if( autofocus_in_continuous_mode ) {
 			if( MyDebug.LOG )
 				Log.d(TAG, "continuous mode where user touched to focus");
+
+			boolean wait_for_focus;
+
 			synchronized(this) {
 				// as below, if an autofocus is in progress, then take photo when it's completed
 				if( focus_success == FOCUS_WAITING ) {
 					if( MyDebug.LOG )
 						Log.d(TAG, "autofocus_in_continuous_mode: take photo after current focus");
+					wait_for_focus = true;
 					take_photo_after_autofocus = true;
-					camera_controller.setCaptureFollowAutofocusHint(true);
 				}
 				else {
 					// when autofocus_in_continuous_mode==true, it means the user recently touched to focus in continuous focus mode, so don't do another focus
 					if( MyDebug.LOG )
 						Log.d(TAG, "autofocus_in_continuous_mode: no need to refocus");
-					takePhotoWhenFocused(continuous_fast_burst);
+					wait_for_focus = false;
 				}
+			}
+
+			// call CameraController outside the lock
+			if( wait_for_focus ) {
+				camera_controller.setCaptureFollowAutofocusHint(true);
+			}
+			else {
+				takePhotoWhenFocused(continuous_fast_burst);
 			}
 		}
 		else if( camera_controller.focusIsContinuous() ) {
@@ -5515,6 +5589,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			takePhotoWhenFocused(continuous_fast_burst);
 		}
 		else if( current_ui_focus_value != null && ( current_ui_focus_value.equals("focus_mode_auto") || current_ui_focus_value.equals("focus_mode_macro") ) ) {
+			boolean wait_for_focus;
 			// n.b., we check focus_value rather than camera_controller.supportsAutoFocus(), as we want to discount focus_mode_locked
 			synchronized(this) {
 				if( focus_success == FOCUS_WAITING ) {
@@ -5522,26 +5597,34 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 					// In general, probably a good idea to not redo a focus - just use the one that's already in progress
 					if( MyDebug.LOG )
 						Log.d(TAG, "take photo after current focus");
+					wait_for_focus = true;
 					take_photo_after_autofocus = true;
-					camera_controller.setCaptureFollowAutofocusHint(true);
 				}
 				else {
+					wait_for_focus = false;
 					focus_success = FOCUS_DONE; // clear focus rectangle for new refocus
-			        CameraController.AutoFocusCallback autoFocusCallback = new CameraController.AutoFocusCallback() {
-						@Override
-						public void onAutoFocus(boolean success) {
-							if( MyDebug.LOG )
-								Log.d(TAG, "autofocus complete: " + success);
-							ensureFlashCorrect(); // need to call this in case user takes picture before startup focus completes!
-							prepareAutoFocusPhoto();
-							takePhotoWhenFocused(continuous_fast_burst);
-						}
-			        };
-					if( MyDebug.LOG )
-						Log.d(TAG, "start autofocus to take picture");
-					camera_controller.autoFocus(autoFocusCallback, true);
-					count_cameraAutoFocus++;
 				}
+			}
+
+			// call CameraController outside the lock
+			if( wait_for_focus ) {
+				camera_controller.setCaptureFollowAutofocusHint(true);
+			}
+			else {
+				CameraController.AutoFocusCallback autoFocusCallback = new CameraController.AutoFocusCallback() {
+					@Override
+					public void onAutoFocus(boolean success) {
+						if( MyDebug.LOG )
+							Log.d(TAG, "autofocus complete: " + success);
+						ensureFlashCorrect(); // need to call this in case user takes picture before startup focus completes!
+						prepareAutoFocusPhoto();
+						takePhotoWhenFocused(continuous_fast_burst);
+					}
+				};
+				if( MyDebug.LOG )
+					Log.d(TAG, "start autofocus to take picture");
+				camera_controller.autoFocus(autoFocusCallback, true);
+				count_cameraAutoFocus++;
 			}
 		}
 		else {
@@ -5716,7 +5799,6 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			public void onPictureTaken(byte[] data) {
 				if( MyDebug.LOG )
 					Log.d(TAG, "onPictureTaken");
-    	    	// n.b., this is automatically run in a different thread
 				initDate();
 				if( !applicationInterface.onPictureTaken(data, current_date) ) {
 					if( MyDebug.LOG )
@@ -5741,7 +5823,6 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			public void onBurstPictureTaken(List<byte[]> images) {
 				if( MyDebug.LOG )
 					Log.d(TAG, "onBurstPictureTaken");
-    	    	// n.b., this is automatically run in a different thread
 				initDate();
 
 				success = true;
@@ -5752,10 +5833,21 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 				}
     	    }
 
-			public boolean imageQueueWouldBlock(int n_jpegs) {
+			public void onRawBurstPictureTaken(List<RawImage> raw_images) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "onRawBurstPictureTaken");
+				initDate();
+
+				if( !applicationInterface.onRawBurstPictureTaken(raw_images, current_date) ) {
+					if( MyDebug.LOG )
+						Log.e(TAG, "applicationInterface.onRawBurstPictureTaken failed");
+				}
+			}
+
+			public boolean imageQueueWouldBlock(int n_raw, int n_jpegs) {
 				if( MyDebug.LOG )
 					Log.d(TAG, "imageQueueWouldBlock");
-				return applicationInterface.imageQueueWouldBlock(false, n_jpegs);
+				return applicationInterface.imageQueueWouldBlock(n_raw, n_jpegs);
 			}
 
 			public void onFrontScreenTurnOn() {
@@ -6044,14 +6136,18 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 				camera_controller.cancelAutoFocus();
 			}
 		}
+
+		boolean local_take_photo_after_autofocus = false;
 		synchronized(this) {
-			if( take_photo_after_autofocus ) {
-				if( MyDebug.LOG ) 
-					Log.d(TAG, "take_photo_after_autofocus is set");
-				take_photo_after_autofocus = false;
-				prepareAutoFocusPhoto();
-				takePhotoWhenFocused(false);
-			}
+			local_take_photo_after_autofocus = take_photo_after_autofocus;
+			take_photo_after_autofocus = false;
+		}
+		// call CameraController outside the lock
+		if( local_take_photo_after_autofocus ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "take_photo_after_autofocus is set");
+			prepareAutoFocusPhoto();
+			takePhotoWhenFocused(false);
 		}
 		if( MyDebug.LOG )
 			Log.d(TAG, "autoFocusCompleted exit");
@@ -6562,8 +6658,8 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 	/** Returns the horizontal angle of view in degrees (when unzoomed).
 	 */
 	public float getViewAngleX(boolean for_preview) {
-		if( MyDebug.LOG )
-			Log.d(TAG, "getViewAngleX: " + for_preview);
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "getViewAngleX: " + for_preview);*/
 		CameraController.Size size = for_preview ? this.getCurrentPreviewSize() : this.getCurrentPictureSize();
 		if( size == null ) {
 			Log.e(TAG, "can't find view angle x size");
@@ -6571,12 +6667,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		}
 		float view_aspect_ratio = view_angle_x/view_angle_y;
 		float actual_aspect_ratio = ((float)size.width)/(float)size.height;
-		if( MyDebug.LOG ) {
+		/*if( MyDebug.LOG ) {
 			Log.d(TAG, "view_angle_x: " + view_angle_x);
 			Log.d(TAG, "view_angle_y: " + view_angle_y);
 			Log.d(TAG, "view_aspect_ratio: " + view_aspect_ratio);
 			Log.d(TAG, "actual_aspect_ratio: " + actual_aspect_ratio);
-		}
+		}*/
 		if( Math.abs(actual_aspect_ratio - view_aspect_ratio) < 1.0e-5f ) {
 			return this.view_angle_x;
 		}
@@ -6587,8 +6683,8 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			float aspect_ratio_scale = actual_aspect_ratio/view_aspect_ratio;
 			//float actual_view_angle_x = view_angle_x*aspect_ratio_scale;
 			float actual_view_angle_x = (float)Math.toDegrees(2.0 * Math.atan(aspect_ratio_scale * Math.tan(Math.toRadians(view_angle_x) / 2.0)));
-			if( MyDebug.LOG )
-				Log.d(TAG, "actual_view_angle_x: " + actual_view_angle_x);
+			/*if( MyDebug.LOG )
+				Log.d(TAG, "actual_view_angle_x: " + actual_view_angle_x);*/
 			return actual_view_angle_x;
 		}
 	}
@@ -6596,8 +6692,8 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 	/** Returns the vertical angle of view in degrees (when unzoomed).
 	 */
 	public float getViewAngleY(boolean for_preview) {
-		if( MyDebug.LOG )
-			Log.d(TAG, "getViewAngleY: " + for_preview);
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "getViewAngleY: " + for_preview);*/
 		CameraController.Size size = for_preview ? this.getCurrentPreviewSize() : this.getCurrentPictureSize();
 		if( size == null ) {
 			Log.e(TAG, "can't find view angle y size");
@@ -6605,12 +6701,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		}
 		float view_aspect_ratio = view_angle_x/view_angle_y;
 		float actual_aspect_ratio = ((float)size.width)/(float)size.height;
-		if( MyDebug.LOG ) {
+		/*if( MyDebug.LOG ) {
 			Log.d(TAG, "view_angle_x: " + view_angle_x);
 			Log.d(TAG, "view_angle_y: " + view_angle_y);
 			Log.d(TAG, "view_aspect_ratio: " + view_aspect_ratio);
 			Log.d(TAG, "actual_aspect_ratio: " + actual_aspect_ratio);
-		}
+		}*/
 		if( Math.abs(actual_aspect_ratio - view_aspect_ratio) < 1.0e-5f ) {
 			return this.view_angle_y;
 		}
@@ -6618,8 +6714,8 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			float aspect_ratio_scale = view_aspect_ratio/actual_aspect_ratio;
 			//float actual_view_angle_y = view_angle_y*aspect_ratio_scale;
 			float actual_view_angle_y = (float)Math.toDegrees(2.0 * Math.atan(aspect_ratio_scale * Math.tan(Math.toRadians(view_angle_y) / 2.0)));
-			if( MyDebug.LOG )
-				Log.d(TAG, "actual_view_angle_y: " + actual_view_angle_y);
+			/*if( MyDebug.LOG )
+				Log.d(TAG, "actual_view_angle_y: " + actual_view_angle_y);*/
 			return actual_view_angle_y;
 		}
 		else {
@@ -6642,7 +6738,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     }
 
     /**
-     * @param check_burst If false, and a burst mode is in use (fast burst, expo, HDR), then the
+     * @param check_burst If true, and a burst mode is in use (fast burst, expo, HDR), then the
      *                    returned list will be filtered to remove sizes that don't support burst.
      */
     public List<CameraController.Size> getSupportedPictureSizes(boolean check_burst) {
@@ -6789,6 +6885,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     public void onResume() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "onResume");
+		recreatePreviewBitmap();
 		this.app_is_paused = false;
 		cameraSurface.onResume();
 		if( canvasView != null )
@@ -6831,11 +6928,35 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		cameraSurface.onPause();
 		if( canvasView != null )
 			canvasView.onPause();
+		freePreviewBitmap();
     }
 
     public void onDestroy() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "onDestroy");
+
+		if( refreshPreviewBitmapTaskIsRunning() ) {
+			// if we're being destroyed, better to wait until completion rather than just cancelling
+			try {
+				refreshPreviewBitmapTask.get(); // forces thread to complete
+			}
+			catch(ExecutionException | InterruptedException e) {
+				Log.e(TAG, "exception while waiting for background_task to finish");
+				e.printStackTrace();
+			}
+		}
+		freePreviewBitmap(); // in case onDestroy() called directly without onPause()
+
+		if( rs != null ) {
+			try {
+				rs.destroy(); // on Android M onwards this is a NOP - instead we call RenderScript.releaseAllContexts(); in MainActivity.onDestroy()
+			}
+			catch(RSInvalidStateException e) {
+				e.printStackTrace();
+			}
+			rs = null;
+		}
+
 		if( camera_open_state == CameraOpenState.CAMERAOPENSTATE_CLOSING ) {
 			// If the camera is currently closing on a background thread, then wait until the camera has closed to be safe
 			if( MyDebug.LOG ) {
@@ -6936,10 +7057,10 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			canvas.save();
 			canvas.rotate(ui_rotation, canvas.getWidth()/2.0f, canvas.getHeight()/2.0f);
 
-			rect.left = canvas.getWidth()/2 - bounds.width()/2 + bounds.left - padding;
-			rect.top = canvas.getHeight()/2 + bounds.top - padding + offset_y;
-			rect.right = canvas.getWidth()/2 - bounds.width()/2 + bounds.right + padding;
-			rect.bottom = canvas.getHeight()/2 + bounds.bottom + padding + offset_y;
+			rect.left = canvas.getWidth()/2.0f - bounds.width()/2.0f + bounds.left - padding;
+			rect.top = canvas.getHeight()/2.0f + bounds.top - padding + offset_y;
+			rect.right = canvas.getWidth()/2.0f - bounds.width()/2.0f + bounds.right + padding;
+			rect.bottom = canvas.getHeight()/2.0f + bounds.bottom + padding + offset_y;
 
 			paint.setStyle(Paint.Style.FILL);
 			paint.setColor(Color.rgb(50, 50, 50));
@@ -6950,7 +7071,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 			paint.setColor(Color.WHITE);
 			int ypos = canvas.getHeight()/2 + offset_y - ((lines.length-1) * height)/2;
 			for(String line : lines) {
-				canvas.drawText(line, canvas.getWidth()/2 - bounds.width()/2, ypos, paint);
+				canvas.drawText(line, canvas.getWidth()/2.0f - bounds.width()/2.0f, ypos, paint);
 				ypos += height;
 			}
 			canvas.restore();
@@ -7132,7 +7253,598 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     		}
     	}
     }
-	
+
+	public void enablePreviewBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "enablePreviewBitmap");
+		if( cameraSurface instanceof TextureView ) {
+			want_preview_bitmap = true;
+			recreatePreviewBitmap();
+		}
+	}
+
+	public void disablePreviewBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "disablePreviewBitmap");
+		freePreviewBitmap();
+		want_preview_bitmap = false;
+		histogramScript = null; // to help garbage collection
+	}
+
+	public boolean isPreviewBitmapEnabled() {
+    	return this.want_preview_bitmap;
+	}
+
+
+	public boolean refreshPreviewBitmapTaskIsRunning() {
+		return refreshPreviewBitmapTask != null;
+	}
+
+	/* Recycles the supplied bitmap, but if the refreshPreviewBitmapTask is running, waits until
+	   it isn't running.
+	 */
+	private void recycleBitmapForPreviewTask(final Bitmap bitmap) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "recycleBitmapForPreviewTask");
+		if( !refreshPreviewBitmapTaskIsRunning() ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "refreshPreviewBitmapTask not running, can recycle bitmap");
+			bitmap.recycle();
+		}
+		else {
+			// Don't want to recycle bitmap whilst thread is running!
+			// See test testPreviewBitmap().
+			if( MyDebug.LOG )
+				Log.d(TAG, "refreshPreviewBitmapTask still running, wait before recycle bitmap");
+			final Handler handler = new Handler();
+			final long recycle_delay = 500;
+			handler.postDelayed(new Runnable() {
+				@Override
+				public void run() {
+					if( !refreshPreviewBitmapTaskIsRunning() ) {
+						if( MyDebug.LOG )
+							Log.d(TAG, "refreshPreviewBitmapTask not running now, can recycle bitmap");
+						bitmap.recycle();
+					}
+					else {
+						if( MyDebug.LOG )
+							Log.d(TAG, "refreshPreviewBitmapTask still running, wait again before recycle bitmap");
+						handler.postDelayed(this, recycle_delay);
+					}
+				}
+			}, recycle_delay);
+		}
+	}
+
+	private void freePreviewBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "freePreviewBitmap");
+		cancelRefreshPreviewBitmap();
+		histogram = null;
+		if( preview_bitmap != null ) {
+			recycleBitmapForPreviewTask(preview_bitmap);
+            // It's okay to set preview_bitmap to null even if refreshPreviewBitmapTask is currently running in the background
+            // as it takes it's own reference. But we shouldn't recycle until the background thread is complete.
+            preview_bitmap = null;
+		}
+		freeZebraStripesBitmap();
+		freeFocusPeakingBitmap();
+	}
+
+	private void recreatePreviewBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "recreatePreviewBitmap");
+		freePreviewBitmap();
+
+		if( want_preview_bitmap ) {
+			final int downscale = 4;
+			int bitmap_width = textureview_w / downscale;
+			int bitmap_height = textureview_h / downscale;
+			int rotation = getDisplayRotationDegrees();
+			if( rotation == 90 || rotation == 270 ) {
+				int dummy = bitmap_width;
+				bitmap_width = bitmap_height;
+				bitmap_height = dummy;
+			}
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "bitmap_width: " + bitmap_width);
+				Log.d(TAG, "bitmap_height: " + bitmap_height);
+				Log.d(TAG, "rotation: " + rotation);
+			}
+			preview_bitmap = Bitmap.createBitmap(bitmap_width, bitmap_height, Bitmap.Config.ARGB_8888);
+			createZebraStripesBitmap();
+			createFocusPeakingBitmap();
+		}
+	}
+
+	private void freeZebraStripesBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "freeZebraStripesBitmap");
+		if( zebra_stripes_bitmap_buffer != null ) {
+			recycleBitmapForPreviewTask(zebra_stripes_bitmap_buffer);
+			zebra_stripes_bitmap_buffer = null;
+		}
+		if( zebra_stripes_bitmap != null ) {
+			zebra_stripes_bitmap.recycle();
+			zebra_stripes_bitmap = null;
+		}
+	}
+
+	private void createZebraStripesBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "createZebraStripesBitmap");
+		if( want_zebra_stripes ) {
+			zebra_stripes_bitmap_buffer = Bitmap.createBitmap(preview_bitmap.getWidth(), preview_bitmap.getHeight(), Bitmap.Config.ARGB_8888);
+			// zebra_stripes_bitmap itself is created dynamically when generating the zebra stripes
+		}
+	}
+
+	private void freeFocusPeakingBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "freeFocusPeakingBitmap");
+		if( focus_peaking_bitmap_buffer != null ) {
+			recycleBitmapForPreviewTask(focus_peaking_bitmap_buffer);
+			focus_peaking_bitmap_buffer = null;
+		}
+		if( focus_peaking_bitmap != null ) {
+			focus_peaking_bitmap.recycle();
+			focus_peaking_bitmap = null;
+		}
+	}
+
+	private void createFocusPeakingBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "createFocusPeakingBitmap");
+		if( want_focus_peaking ) {
+			focus_peaking_bitmap_buffer = Bitmap.createBitmap(preview_bitmap.getWidth(), preview_bitmap.getHeight(), Bitmap.Config.ARGB_8888);
+			// focus_peaking_bitmap itself is created dynamically when generating
+		}
+	}
+
+	public void enableHistogram(HistogramType histogram_type) {
+		this.want_histogram = true;
+		this.histogram_type = histogram_type;
+	}
+
+	public void disableHistogram() {
+		this.want_histogram = false;
+	}
+
+	public int [] getHistogram() {
+		return this.histogram;
+	}
+
+	public void enableZebraStripes(int zebra_stripes_threshold) {
+		this.want_zebra_stripes = true;
+		this.zebra_stripes_threshold = zebra_stripes_threshold;
+		if( this.zebra_stripes_bitmap_buffer == null ) {
+			createZebraStripesBitmap();
+		}
+	}
+
+	public void disableZebraStripes() {
+    	if( this.want_zebra_stripes ) {
+			this.want_zebra_stripes = false;
+			freeZebraStripesBitmap();
+		}
+	}
+
+	public Bitmap getZebraStripesBitmap() {
+    	return this.zebra_stripes_bitmap;
+	}
+
+	public void enableFocusPeaking() {
+		this.want_focus_peaking = true;
+		if( this.focus_peaking_bitmap_buffer == null ) {
+			createFocusPeakingBitmap();
+		}
+	}
+
+	public void disableFocusPeaking() {
+		if( this.want_focus_peaking ) {
+			this.want_focus_peaking = false;
+			freeFocusPeakingBitmap();
+		}
+	}
+
+	public Bitmap getFocusPeakingBitmap() {
+		return this.focus_peaking_bitmap;
+	}
+
+	private static class RefreshPreviewBitmapTaskResult {
+		int [] new_histogram;
+		Bitmap new_zebra_stripes_bitmap;
+		Bitmap new_focus_peaking_bitmap;
+	}
+
+	// use static class, and WeakReferences, to avoid memory leaks: https://stackoverflow.com/questions/44309241/warning-this-asynctask-class-should-be-static-or-leaks-might-occur/46166223
+	private static class RefreshPreviewBitmapTask extends AsyncTask<Void, Void, RefreshPreviewBitmapTaskResult> {
+		private static final String TAG = "RefreshPreviewBmTask";
+        private final WeakReference<Preview> previewReference;
+		private final WeakReference<ScriptC_histogram_compute> histogramScriptReference;
+		// we take references to the bitmaps, so the Preview class can set this to null even whilst the background thread is running
+        private final WeakReference<Bitmap> preview_bitmapReference;
+		private final WeakReference<Bitmap> zebra_stripes_bitmap_bufferReference;
+		private final WeakReference<Bitmap> focus_peaking_bitmap_bufferReference;
+		private final boolean update_histogram;
+
+		RefreshPreviewBitmapTask(Preview preview, boolean update_histogram) {
+            this.previewReference = new WeakReference<>(preview);
+			this.preview_bitmapReference = new WeakReference<>(preview.preview_bitmap);
+			this.zebra_stripes_bitmap_bufferReference = new WeakReference<>(preview.zebra_stripes_bitmap_buffer);
+			this.focus_peaking_bitmap_bufferReference = new WeakReference<>(preview.focus_peaking_bitmap_buffer);
+			this.update_histogram = update_histogram;
+
+			if( preview.rs == null ) {
+				// create on the UI thread rather than doInBackground(), to avoid threading issues
+				if( MyDebug.LOG )
+					Log.d(TAG, "create renderscript object");
+				preview.rs = RenderScript.create(preview.getContext());
+			}
+			if( preview.histogramScript == null ) {
+				// create on the UI thread rather than doInBackground(), to avoid threading issues
+				if( MyDebug.LOG )
+					Log.d(TAG, "create histogramScript");
+				preview.histogramScript = new ScriptC_histogram_compute(preview.rs);
+			}
+			// take a local copy, so preview.histogramScript can be set to null whilst background thread is running
+			this.histogramScriptReference = new WeakReference<>(preview.histogramScript);
+		}
+
+		private static int [] computeHistogram(Allocation allocation_in, RenderScript rs, ScriptC_histogram_compute histogramScript, HistogramType histogram_type) {
+			long debug_time = 0;
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "computeHistogram");
+				debug_time = System.currentTimeMillis();
+			}
+
+			int [] new_histogram;
+
+			if( histogram_type == HistogramType.HISTOGRAM_TYPE_RGB ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "rgb histogram");
+				Allocation histogramAllocationR = Allocation.createSized(rs, Element.I32(rs), 256);
+				Allocation histogramAllocationG = Allocation.createSized(rs, Element.I32(rs), 256);
+				Allocation histogramAllocationB = Allocation.createSized(rs, Element.I32(rs), 256);
+
+				if( MyDebug.LOG )
+					Log.d(TAG, "bind histogram allocations");
+				histogramScript.bind_histogram_r(histogramAllocationR);
+				histogramScript.bind_histogram_g(histogramAllocationG);
+				histogramScript.bind_histogram_b(histogramAllocationB);
+				histogramScript.invoke_init_histogram_rgb();
+				if( MyDebug.LOG )
+					Log.d(TAG, "call histogramScript");
+				if( MyDebug.LOG )
+					Log.d(TAG, "time before histogramScript: " + (System.currentTimeMillis() - debug_time));
+				histogramScript.forEach_histogram_compute_rgb(allocation_in);
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after histogramScript: " + (System.currentTimeMillis() - debug_time));
+
+				new_histogram = new int[256*3];
+				int c=0;
+				int [] temp = new int[256];
+
+				histogramAllocationR.copyTo(temp);
+				for(int i=0;i<256;i++)
+					new_histogram[c++] = temp[i];
+
+				histogramAllocationG.copyTo(temp);
+				for(int i=0;i<256;i++)
+					new_histogram[c++] = temp[i];
+
+				histogramAllocationB.copyTo(temp);
+				for(int i=0;i<256;i++)
+					new_histogram[c++] = temp[i];
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after copying histogram data: " + (System.currentTimeMillis() - debug_time));
+
+				histogramAllocationR.destroy();
+				histogramAllocationG.destroy();
+				histogramAllocationB.destroy();
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after destroying allocations: " + (System.currentTimeMillis() - debug_time));
+			}
+			else {
+				if( MyDebug.LOG )
+					Log.d(TAG, "single channel histogram");
+				Allocation histogramAllocation = Allocation.createSized(rs, Element.I32(rs), 256);
+
+				if( MyDebug.LOG )
+					Log.d(TAG, "bind histogram allocation");
+				histogramScript.bind_histogram(histogramAllocation);
+				histogramScript.invoke_init_histogram();
+				if( MyDebug.LOG )
+					Log.d(TAG, "call histogramScript");
+				if( MyDebug.LOG )
+					Log.d(TAG, "time before histogramScript: " + (System.currentTimeMillis() - debug_time));
+				switch( histogram_type ) {
+					case HISTOGRAM_TYPE_LUMINANCE:
+						histogramScript.forEach_histogram_compute_by_luminance(allocation_in);
+						break;
+					case HISTOGRAM_TYPE_VALUE:
+						histogramScript.forEach_histogram_compute_by_value(allocation_in);
+						break;
+					case HISTOGRAM_TYPE_INTENSITY:
+						histogramScript.forEach_histogram_compute_by_intensity(allocation_in);
+						break;
+					case HISTOGRAM_TYPE_LIGHTNESS:
+						histogramScript.forEach_histogram_compute_by_lightness(allocation_in);
+						break;
+				}
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after histogramScript: " + (System.currentTimeMillis() - debug_time));
+
+				new_histogram = new int[256];
+				histogramAllocation.copyTo(new_histogram);
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after copying histogram data: " + (System.currentTimeMillis() - debug_time));
+
+				histogramAllocation.destroy();
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after destroying allocations: " + (System.currentTimeMillis() - debug_time));
+			}
+			return new_histogram;
+		}
+
+		@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+		@Override
+		protected RefreshPreviewBitmapTaskResult doInBackground(Void... voids) {
+			long debug_time = 0;
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "doInBackground, async task: " + this);
+				debug_time = System.currentTimeMillis();
+			}
+
+			Preview preview = previewReference.get();
+			if( preview == null ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "preview is null");
+				return null;
+			}
+			ScriptC_histogram_compute histogramScript = histogramScriptReference.get();
+			if( histogramScript == null ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "histogramScript is null");
+				return null;
+			}
+			Bitmap preview_bitmap = preview_bitmapReference.get();
+			if( preview_bitmap == null ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "preview_bitmap is null");
+				return null;
+			}
+			Bitmap zebra_stripes_bitmap_buffer = zebra_stripes_bitmap_bufferReference.get();
+			Bitmap focus_peaking_bitmap_buffer = focus_peaking_bitmap_bufferReference.get();
+			Activity activity = (Activity)preview.getContext();
+			if( activity == null || activity.isFinishing() ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "activity is null or finishing");
+				return null;
+			}
+
+			RefreshPreviewBitmapTaskResult result = new RefreshPreviewBitmapTaskResult();
+
+			try {
+				if( MyDebug.LOG )
+					Log.d(TAG, "time before getBitmap: " + (System.currentTimeMillis() - debug_time));
+				TextureView textureView = (TextureView)preview.cameraSurface;
+				textureView.getBitmap(preview_bitmap);
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after getBitmap: " + (System.currentTimeMillis() - debug_time));
+
+				Allocation allocation_in = Allocation.createFromBitmap(preview.rs, preview_bitmap);
+				if( MyDebug.LOG )
+					Log.d(TAG, "time after createFromBitmap: " + (System.currentTimeMillis() - debug_time));
+
+				if( update_histogram ) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "generate histogram");
+
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before computeHistogram: " + (System.currentTimeMillis() - debug_time));
+					result.new_histogram = computeHistogram(allocation_in, preview.rs, histogramScript, preview.histogram_type);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after computeHistogram: " + (System.currentTimeMillis() - debug_time));
+				}
+
+				if( preview.want_zebra_stripes && zebra_stripes_bitmap_buffer != null ) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "generate zebra stripes bitmap");
+					Allocation output_allocation = Allocation.createFromBitmap(preview.rs, zebra_stripes_bitmap_buffer);
+
+					histogramScript.set_zebra_stripes_threshold(preview.zebra_stripes_threshold);
+					histogramScript.set_zebra_stripes_width(zebra_stripes_bitmap_buffer.getWidth()/20);
+
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before histogramScript generate_zebra_stripes: " + (System.currentTimeMillis() - debug_time));
+					histogramScript.forEach_generate_zebra_stripes(allocation_in, output_allocation);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after histogramScript generate_zebra_stripes: " + (System.currentTimeMillis() - debug_time));
+
+					output_allocation.copyTo(zebra_stripes_bitmap_buffer);
+					output_allocation.destroy();
+
+					// The original orientation of the bitmap we get from textureView.getBitmap() needs to be rotated to
+					// account for the orientation of camera vs device, but not to account for the current orientation
+					// of the device
+					int rotation_degrees = preview.getDisplayRotationDegrees();
+					/*if( MyDebug.LOG ) {
+						Log.d(TAG, "orientation of display relative to natural orientaton: " + rotation_degrees);
+					}*/
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before creating new_zebra_stripes_bitmap: " + (System.currentTimeMillis() - debug_time));
+					Matrix matrix = new Matrix();
+					matrix.postRotate(-rotation_degrees);
+					result.new_zebra_stripes_bitmap = Bitmap.createBitmap(zebra_stripes_bitmap_buffer, 0, 0,
+							zebra_stripes_bitmap_buffer.getWidth(), zebra_stripes_bitmap_buffer.getHeight(), matrix, false);
+
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after creating new_zebra_stripes_bitmap: " + (System.currentTimeMillis() - debug_time));
+					/*
+					// test:
+					//File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + "/zebra_stripes_bitmap_buffer.jpg");
+					File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + "/zebra_stripes_bitmap.jpg");
+					try {
+						OutputStream outputStream = new FileOutputStream(file);
+						//zebra_stripes_bitmap_buffer.compress(Bitmap.CompressFormat.JPEG, 90, outputStream);
+						preview.zebra_stripes_bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream);
+						outputStream.close();
+						MainActivity mActivity = (MainActivity) preview.getContext();
+						mActivity.getStorageUtils().broadcastFile(file, true, false, true);
+					}
+					catch(IOException e) {
+						e.printStackTrace();
+					}
+					*/
+				}
+
+				if( preview.want_focus_peaking && focus_peaking_bitmap_buffer != null ) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "generate focus peaking bitmap");
+					Allocation output_allocation = Allocation.createFromBitmap(preview.rs, focus_peaking_bitmap_buffer);
+
+					histogramScript.set_bitmap(allocation_in);
+
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before histogramScript generate_focus_peaking: " + (System.currentTimeMillis() - debug_time));
+					histogramScript.forEach_generate_focus_peaking(allocation_in, output_allocation);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after histogramScript generate_focus_peaking: " + (System.currentTimeMillis() - debug_time));
+
+					// median filter
+                    Allocation filtered_allocation = Allocation.createTyped(preview.rs, Type.createXY(preview.rs, Element.RGBA_8888(preview.rs), focus_peaking_bitmap_buffer.getWidth(), focus_peaking_bitmap_buffer.getHeight()));
+					histogramScript.set_bitmap(output_allocation);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before histogramScript generate_focus_peaking_filtered: " + (System.currentTimeMillis() - debug_time));
+                    histogramScript.forEach_generate_focus_peaking_filtered(output_allocation, filtered_allocation);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after histogramScript generate_focus_peaking_filtered: " + (System.currentTimeMillis() - debug_time));
+                    output_allocation.destroy();
+                    output_allocation = filtered_allocation;
+
+					output_allocation.copyTo(focus_peaking_bitmap_buffer);
+					output_allocation.destroy();
+
+					// See comments above for zebra stripes
+					int rotation_degrees = preview.getDisplayRotationDegrees();
+					if( MyDebug.LOG )
+						Log.d(TAG, "time before creating new_focus_peaking_bitmap: " + (System.currentTimeMillis() - debug_time));
+					Matrix matrix = new Matrix();
+					matrix.postRotate(-rotation_degrees);
+					result.new_focus_peaking_bitmap = Bitmap.createBitmap(focus_peaking_bitmap_buffer, 0, 0,
+							focus_peaking_bitmap_buffer.getWidth(), focus_peaking_bitmap_buffer.getHeight(), matrix, false);
+					if( MyDebug.LOG )
+						Log.d(TAG, "time after creating new_focus_peaking_bitmap: " + (System.currentTimeMillis() - debug_time));
+				}
+
+				allocation_in.destroy();
+			}
+			catch(IllegalStateException e) {
+				if( MyDebug.LOG )
+					Log.e(TAG, "failed to getBitmap");
+				e.printStackTrace();
+			}
+
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "time taken: " + (System.currentTimeMillis() - debug_time));
+			}
+			return result;
+		}
+
+		/** The system calls this to perform work in the UI thread and delivers
+		 * the result from doInBackground() */
+		@Override
+		protected void onPostExecute(RefreshPreviewBitmapTaskResult result) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "onPostExecute, async task: " + this);
+
+			Preview preview = previewReference.get();
+			if( preview == null ) {
+				return;
+			}
+			Activity activity = (Activity)preview.getContext();
+			if( activity == null || activity.isFinishing() ) {
+				return;
+			}
+			if( result == null ) {
+				return;
+			}
+
+			if( result.new_histogram != null )
+				preview.histogram = result.new_histogram;
+			/*if( MyDebug.LOG && preview.histogram != null ) {
+				for(int i=0;i<preview.histogram.length;i++)
+					Log.d(TAG, "    histogram[" + i + "]: " + preview.histogram[i]);
+			}*/
+
+			if( preview.zebra_stripes_bitmap != null ) {
+				preview.zebra_stripes_bitmap.recycle();
+			}
+			preview.zebra_stripes_bitmap = result.new_zebra_stripes_bitmap;
+
+			if( preview.focus_peaking_bitmap != null ) {
+				preview.focus_peaking_bitmap.recycle();
+			}
+			preview.focus_peaking_bitmap = result.new_focus_peaking_bitmap;
+
+			preview.refreshPreviewBitmapTask = null;
+
+			if( MyDebug.LOG )
+				Log.d(TAG, "onPostExecute done, async task: " + this);
+		}
+
+		@Override
+		protected void onCancelled() {
+			if( MyDebug.LOG )
+				Log.d(TAG, "onCancelled, async task: " + this);
+			Preview preview = previewReference.get();
+			if( preview == null ) {
+				return;
+			}
+			preview.refreshPreviewBitmapTask = null;
+		}
+	}
+
+	private void refreshPreviewBitmap() {
+		final int refresh_histogram_rate_ms = 200;
+		final long refresh_time = (want_zebra_stripes || want_focus_peaking) ? 40 : refresh_histogram_rate_ms;
+		long time_now = System.currentTimeMillis();
+		if( want_preview_bitmap && preview_bitmap != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP &&
+			!app_is_paused && !applicationInterface.isPreviewInBackground() &&
+			!refreshPreviewBitmapTaskIsRunning() && time_now > last_preview_bitmap_time_ms + refresh_time ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "refreshPreviewBitmap");
+			// even if we're running the background task at a faster rate (due to zebra stripes etc), we still update the histogram
+			// at the standard rate
+			boolean update_histogram = want_histogram && time_now > last_histogram_time_ms + refresh_histogram_rate_ms;
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "update_histogram: " + update_histogram);
+				Log.d(TAG, "want_histogram: " + want_histogram);
+				Log.d(TAG, "time_now: " + time_now);
+				Log.d(TAG, "last_preview_bitmap_time_ms: " + last_preview_bitmap_time_ms);
+				Log.d(TAG, "last_histogram_time_ms: " + last_histogram_time_ms);
+			}
+
+			this.last_preview_bitmap_time_ms = time_now;
+			if( update_histogram ) {
+				this.last_histogram_time_ms = time_now;
+			}
+			refreshPreviewBitmapTask = new RefreshPreviewBitmapTask(this, update_histogram);
+			refreshPreviewBitmapTask.execute();
+		}
+	}
+
+	private void cancelRefreshPreviewBitmap() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "cancelRefreshPreviewBitmap");
+		if( refreshPreviewBitmapTaskIsRunning() ) {
+			refreshPreviewBitmapTask.cancel(true);
+			// we don't set refreshPreviewBitmapTask to null - this will be done by the task itself when it completes;
+            // and we want to know when the task is no longer running (e.g., for freePreviewBitmap()).
+		}
+	}
+
 	public boolean isVideo() {
 		return is_video;
 	}

@@ -4,7 +4,7 @@ import net.sourceforge.opencamera.CameraController.CameraController;
 import net.sourceforge.opencamera.CameraController.CameraControllerManager2;
 import net.sourceforge.opencamera.Preview.Preview;
 import net.sourceforge.opencamera.Preview.VideoProfile;
-import net.sourceforge.opencamera.Remotecontrol.BluetoothLeService;
+import net.sourceforge.opencamera.remotecontrol.BluetoothLeService;
 import net.sourceforge.opencamera.UI.FolderChooserDialog;
 import net.sourceforge.opencamera.UI.MainUI;
 import net.sourceforge.opencamera.UI.ManualSeekbars;
@@ -43,7 +43,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
-import android.os.StatFs;
 import android.preference.PreferenceManager;
 import android.provider.MediaStore;
 import android.animation.ArgbEvaluator;
@@ -79,6 +78,7 @@ import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -93,6 +93,9 @@ import android.widget.ZoomControls;
  */
 public class MainActivity extends Activity {
 	private static final String TAG = "MainActivity";
+
+	private static int activity_count = 0;
+
 	private SensorManager mSensorManager;
 	private Sensor mSensorAccelerometer;
 	private Sensor mSensorMagnetic;
@@ -210,6 +213,9 @@ public class MainActivity extends Activity {
 			Log.d(TAG, "onCreate: " + this);
 			debug_time = System.currentTimeMillis();
 		}
+		activity_count++;
+		if( MyDebug.LOG )
+			Log.d(TAG, "activity_count: " + activity_count);
 		super.onCreate(savedInstanceState);
 
 		if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2 ) {
@@ -506,7 +512,7 @@ public class MainActivity extends Activity {
 					// E.g., we have a "What's New" for 1.44 (64), but then push out a quick fix for 1.44.1 (65). We don't want to
 					// show the dialog again to people who already received 1.44 (64), but we still want to show the dialog to people
 					// upgrading from earlier versions.
-					int whats_new_version = 67; // 1.45
+					int whats_new_version = 70; // 1.46
 					whats_new_version = Math.min(whats_new_version, version_code); // whats_new_version should always be <= version_code, but just in case!
 					if( MyDebug.LOG ) {
 						Log.d(TAG, "whats_new_version: " + whats_new_version);
@@ -800,6 +806,9 @@ public class MainActivity extends Activity {
 			Log.d(TAG, "onDestroy");
 			Log.d(TAG, "size of preloaded_bitmap_resources: " + preloaded_bitmap_resources.size());
 		}
+		activity_count--;
+		if( MyDebug.LOG )
+			Log.d(TAG, "activity_count: " + activity_count);
 
 		// reduce risk of losing any images
 		// we don't do this in onPause or onStop, due to risk of ANRs
@@ -812,6 +821,16 @@ public class MainActivity extends Activity {
 		preview.onDestroy();
 		if( applicationInterface != null ) {
 			applicationInterface.onDestroy();
+		}
+		if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && activity_count == 0 ) {
+			// See note in HDRProcessor.onDestroy() - but from Android M, renderscript contexts are released with releaseAllContexts()
+			// doc for releaseAllContexts() says "If no contexts have been created this function does nothing"
+			// Important to only do so if no other activities are running (see activity_count). Otherwise risk
+			// of crashes if one activity is destroyed when another instance is still using Renderscript. I've
+			// been unable to reproduce this, though such RSInvalidStateException crashes from Google Play.
+			if( MyDebug.LOG )
+				Log.d(TAG, "release renderscript contexts");
+			RenderScript.releaseAllContexts();
 		}
 		if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ) {
 			// see note in HDRProcessor.onDestroy() - but from Android M, renderscript contexts are released with releaseAllContexts()
@@ -1351,6 +1370,7 @@ public class MainActivity extends Activity {
 
         initSpeechRecognizer();
         initLocation();
+		initGyroSensors();
         soundPoolManager.initSound();
     	soundPoolManager.loadSound(R.raw.beep);
     	soundPoolManager.loadSound(R.raw.beep_hi);
@@ -1405,6 +1425,7 @@ public class MainActivity extends Activity {
         stopSpeechRecognizer();
         applicationInterface.getLocationSupplier().freeLocationListeners();
 		applicationInterface.getGyroSensor().stopRecording();
+		applicationInterface.getGyroSensor().disableSensors();
 		soundPoolManager.releaseSound();
 		applicationInterface.clearLastImages(); // this should happen when pausing the preview, but call explicitly just to be safe
 		applicationInterface.getDrawPreview().clearGhostImage();
@@ -1439,7 +1460,15 @@ public class MainActivity extends Activity {
 			CameraController.Size current_size = preview.getCurrentPictureSize();
 			if( current_size != null && current_size.supports_burst ) {
 				MyApplicationInterface.PhotoMode photo_mode = applicationInterface.getPhotoMode();
-				if( photo_mode == MyApplicationInterface.PhotoMode.Standard ||
+				if( photo_mode == MyApplicationInterface.PhotoMode.Standard &&
+						applicationInterface.isRawOnly(photo_mode) ) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "fast burst not supported in RAW-only mode");
+					// in JPEG+RAW mode, a continuous fast burst will only produce JPEGs which is fine; but in RAW only mode,
+					// no images at all would be saved! (Or we could switch to produce JPEGs anyway, but this seems misleading
+					// in RAW only mode.)
+				}
+				else if( photo_mode == MyApplicationInterface.PhotoMode.Standard ||
 						photo_mode == MyApplicationInterface.PhotoMode.FastBurst ) {
 					this.takePicturePressed(false, true);
 					return true;
@@ -1478,6 +1507,37 @@ public class MainActivity extends Activity {
 		if( preview.isVideoRecording() ) { // just in case
 			preview.pauseVideo();
 			mainUI.setPauseVideoContentDescription();
+		}
+	}
+
+	public void clickedCycleRaw(View view) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clickedCycleRaw");
+
+		final SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+		String new_value = null;
+		switch( sharedPreferences.getString(PreferenceKeys.RawPreferenceKey, "preference_raw_no") ) {
+			case "preference_raw_no":
+				new_value = "preference_raw_yes";
+				break;
+			case "preference_raw_yes":
+				new_value = "preference_raw_only";
+				break;
+			case "preference_raw_only":
+				new_value = "preference_raw_no";
+				break;
+			default:
+				Log.e(TAG, "unrecognised raw preference");
+				break;
+		}
+		if( new_value != null ) {
+			SharedPreferences.Editor editor = sharedPreferences.edit();
+			editor.putString(PreferenceKeys.RawPreferenceKey, new_value);
+			editor.apply();
+
+			mainUI.updateCycleRawIcon();
+			applicationInterface.getDrawPreview().updateSettings();
+			preview.reopenCamera(); // needed for RAW options to take effect
 		}
 	}
 
@@ -1592,6 +1652,14 @@ public class MainActivity extends Activity {
 		mainUI.updateAutoLevelIcon();
 		applicationInterface.getDrawPreview().updateSettings(); // because we cache the auto-stabilise setting
 		this.closePopup();
+	}
+
+	public void clickedCycleFlash(View view) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "clickedCycleFlash");
+
+		preview.cycleFlash(true, true);
+		mainUI.updateCycleFlashIcon();
 	}
 
 	public void clickedFaceDetection(View view) {
@@ -1744,6 +1812,14 @@ public class MainActivity extends Activity {
 
 		mainUI.setTakePhotoIcon();
 	    mainUI.setPopupIcon(); // needed as turning to video mode or back can turn flash mode off or back on
+
+		// ensure icons invisible if they're affected by being in video mode or not
+		// (if enabling them, we'll make the icon visible later on)
+		if( !mainUI.showCycleRawIcon() ) {
+			View button = findViewById(R.id.cycle_raw);
+			button.setVisibility(View.GONE);
+		}
+
 		if( !block_startup_toast ) {
 			this.showPhotoVideoToast(true);
 		}
@@ -1873,7 +1949,7 @@ public class MainActivity extends Activity {
 				case "preference_take_photo_border":
 				case "preference_keep_display_on":
 				case "preference_max_brightness":
-				case "preference_hdr_save_expo":
+				//case "preference_hdr_save_expo": // we need to update if this is changed, as it affects whether we request RAW or not in HDR mode when RAW is enabled
 				case "preference_front_camera_mirror":
 				case "preference_stamp":
 				case "preference_stamp_dateformat":
@@ -1938,13 +2014,16 @@ public class MainActivity extends Activity {
 		bundle.putString("camera_api", this.preview.getCameraAPI());
 		bundle.putBoolean("using_android_l", this.preview.usingCamera2API());
 		bundle.putBoolean("supports_auto_stabilise", this.supports_auto_stabilise);
+		bundle.putBoolean("supports_flash", this.preview.supportsFlash());
 		bundle.putBoolean("supports_force_video_4k", this.supports_force_video_4k);
 		bundle.putBoolean("supports_camera2", this.supports_camera2);
 		bundle.putBoolean("supports_face_detection", this.preview.supportsFaceDetection());
 		bundle.putBoolean("supports_raw", this.preview.supportsRaw());
+		bundle.putBoolean("supports_burst_raw", this.supportsBurstRaw());
 		bundle.putBoolean("supports_hdr", this.supportsHDR());
 		bundle.putBoolean("supports_nr", this.supportsNoiseReduction());
 		bundle.putBoolean("supports_expo_bracketing", this.supportsExpoBracketing());
+		bundle.putBoolean("supports_preview_bitmaps", this.supportsPreviewBitmaps());
 		bundle.putInt("max_expo_bracketing_n_images", this.maxExpoBracketingNImages());
 		bundle.putBoolean("supports_exposure_compensation", this.preview.supportsExposures());
 		bundle.putInt("exposure_compensation_min", this.preview.getMinimumExposure());
@@ -1965,6 +2044,8 @@ public class MainActivity extends Activity {
 		bundle.putInt("tonemap_max_curve_points", this.preview.getTonemapMaxCurvePoints());
 		bundle.putBoolean("supports_tonemap_curve", this.preview.supportsTonemapCurve());
 		bundle.putBoolean("supports_photo_video_recording", this.preview.supportsPhotoVideoRecording());
+		bundle.putFloat("camera_view_angle_x", preview.getViewAngleX(false));
+		bundle.putFloat("camera_view_angle_y", preview.getViewAngleY(false));
 
 		putBundleExtra(bundle, "color_effects", this.preview.getSupportedColorEffects());
 		putBundleExtra(bundle, "scene_modes", this.preview.getSupportedSceneModes());
@@ -2257,6 +2338,10 @@ public class MainActivity extends Activity {
 			View button = findViewById(R.id.white_balance_lock);
 			button.setVisibility(View.GONE);
 		}
+		if( !mainUI.showCycleRawIcon() ) {
+			View button = findViewById(R.id.cycle_raw);
+			button.setVisibility(View.GONE);
+		}
 		if( !mainUI.showStoreLocationIcon() ) {
 			View button = findViewById(R.id.store_location);
 			button.setVisibility(View.GONE);
@@ -2273,6 +2358,10 @@ public class MainActivity extends Activity {
 			View button = findViewById(R.id.auto_level);
 			button.setVisibility(View.GONE);
 		}
+		if( !mainUI.showCycleFlashIcon() ) {
+			View button = findViewById(R.id.cycle_flash);
+			button.setVisibility(View.GONE);
+		}
 		if( !mainUI.showFaceDetectionIcon() ) {
 			View button = findViewById(R.id.face_detection);
 			button.setVisibility(View.GONE);
@@ -2285,6 +2374,7 @@ public class MainActivity extends Activity {
 
         initSpeechRecognizer(); // in case we've enabled or disabled speech recognizer
 		initLocation(); // in case we've enabled or disabled GPS
+		initGyroSensors(); // in case we've entered or left panoram
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "updateForSettings: time after init speech and location: " + (System.currentTimeMillis() - debug_time));
 		}
@@ -2503,7 +2593,7 @@ public class MainActivity extends Activity {
     /**
      * Set the brightness to minimal in case the preference key is set to do it
      */
-    void setBrightnessToMinimumIfWanted() {
+	private void setBrightnessToMinimumIfWanted() {
         if( MyDebug.LOG )
             Log.d(TAG, "setBrightnessToMinimum");
         SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
@@ -2542,6 +2632,24 @@ public class MainActivity extends Activity {
 		// force to landscape mode
 		setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
 		//setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE); // testing for devices with unusual sensor orientation (e.g., Nexus 5X)
+		if( preview != null ) {
+			// also need to call setCameraDisplayOrientation, as this handles if the user switched from portrait to reverse landscape whilst in settings/etc
+			// as switching from reverse landscape back to landscape isn't detected in onConfigurationChanged
+			preview.setCameraDisplayOrientation();
+		}
+		if( preview != null && mainUI != null ) {
+			// layoutUI() is needed because even though we call layoutUI from MainUI.onOrientationChanged(), certain things
+			// (ui_rotation) depend on the system orientation too.
+			// Without this, going to Settings, then changing orientation, then exiting settings, would show the icons with the
+			// wrong orientation.
+			// We put this here instead of onConfigurationChanged() as onConfigurationChanged() isn't called when switching from
+			// reverse landscape to landscape orientation: so it's needed to fix if the user starts in portrait, goes to settings
+			// or a dialog, then switches to reverse landscape, then exits settings/dialog - the system orientation will switch
+			// to landscape (which Open Camera is forced to).
+			mainUI.layoutUI();
+		}
+
+
 		// keep screen active - see http://stackoverflow.com/questions/2131948/force-screen-on
 		if( sharedPreferences.getBoolean(PreferenceKeys.getKeepDisplayOnPreferenceKey(), true) ) {
 			if( MyDebug.LOG )
@@ -3990,8 +4098,8 @@ public class MainActivity extends Activity {
 
 	public boolean supportsPanorama() {
 		// require 512MB just to be safe, due to the large number of images that may be created
-		return( large_heap_memory >= 512 );
-		//return false; // currently blocked for release
+		//return( large_heap_memory >= 512 );
+		return false; // currently blocked for release
 	}
 
 	public boolean supportsFastBurst() {
@@ -4006,6 +4114,19 @@ public class MainActivity extends Activity {
 		// Android 7 to limit to more modern devices (for performance reasons)
 		return( Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && preview.usingCamera2API() && large_heap_memory >= 512 && preview.supportsBurst() && preview.supportsExposureTime() );
 		//return false; // currently blocked for release
+	}
+
+	/** Whether RAW mode would be supported for various burst modes (expo bracketing etc).
+	 *  Note that caller should still separately check preview.supportsRaw() if required.
+	 */
+	public boolean supportsBurstRaw() {
+		return( large_heap_memory >= 512 );
+	}
+
+	public boolean supportsPreviewBitmaps() {
+		// In practice we only use TextureView on Android 5+ (with Camera2 API enabled) anyway, but have put an explicit check here -
+		// even if in future we allow TextureView pre-Android 5, we still need Android 5+ for Renderscript.
+		return Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && preview.getView() instanceof TextureView && large_heap_memory >= 128;
 	}
     
     private int maxExpoBracketingNImages() {
@@ -4024,47 +4145,6 @@ public class MainActivity extends Activity {
     	this.supports_force_video_4k = false;
     }
 
-    /** Return free memory in MB.
-     */
-    @SuppressWarnings("deprecation")
-	public long freeMemory() { // return free memory in MB
-		if( MyDebug.LOG )
-			Log.d(TAG, "freeMemory");
-    	try {
-    		File folder = applicationInterface.getStorageUtils().getImageFolder();
-    		if( folder == null ) {
-    			throw new IllegalArgumentException(); // so that we fall onto the backup
-    		}
-	        StatFs statFs = new StatFs(folder.getAbsolutePath());
-	        // cast to long to avoid overflow!
-	        long blocks = statFs.getAvailableBlocks();
-	        long size = statFs.getBlockSize();
-	        return (blocks*size) / 1048576;
-    	}
-    	catch(IllegalArgumentException e) {
-    		// this can happen if folder doesn't exist, or don't have read access
-    		// if the save folder is a subfolder of DCIM, we can just use that instead
-        	try {
-        		if( !applicationInterface.getStorageUtils().isUsingSAF() ) {
-        			// StorageUtils.getSaveLocation() only valid if !isUsingSAF()
-            		String folder_name = applicationInterface.getStorageUtils().getSaveLocation();
-            		if( !folder_name.startsWith("/") ) {
-            			File folder = StorageUtils.getBaseFolder();
-            	        StatFs statFs = new StatFs(folder.getAbsolutePath());
-            	        // cast to long to avoid overflow!
-            	        long blocks = statFs.getAvailableBlocks();
-            	        long size = statFs.getBlockSize();
-            	        return (blocks*size) / 1048576;
-            		}
-        		}
-        	}
-        	catch(IllegalArgumentException e2) {
-        		// just in case
-        	}
-    	}
-		return -1;
-    }
-    
     public static String getDonateLink() {
     	return "https://play.google.com/store/apps/details?id=harman.mark.donation";
     }
@@ -4076,6 +4156,10 @@ public class MainActivity extends Activity {
     public Preview getPreview() {
     	return this.preview;
     }
+
+	public boolean isCameraInBackground() {
+    	return this.camera_in_background;
+	}
 
 	public PermissionHandler getPermissionHandler() {
 		return permissionHandler;
@@ -4142,6 +4226,7 @@ public class MainActivity extends Activity {
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
 		boolean simple = true;
 		boolean video_high_speed = preview.isVideoHighSpeed();
+		MyApplicationInterface.PhotoMode photo_mode = applicationInterface.getPhotoMode();
 		if( preview.isVideo() ) {
 			VideoProfile profile = preview.getVideoProfile();
 
@@ -4217,7 +4302,6 @@ public class MainActivity extends Activity {
 			}
 		}
 		else {
-			MyApplicationInterface.PhotoMode photo_mode = applicationInterface.getPhotoMode();
 			toast_string = getResources().getString(R.string.photo);
 			CameraController.Size current_size = preview.getCurrentPictureSize();
 			toast_string += " " + current_size.width + "x" + current_size.height;
@@ -4317,7 +4401,8 @@ public class MainActivity extends Activity {
 			e.printStackTrace();
 		}
 		String lock_orientation = applicationInterface.getLockOrientationPref();
-		if( !lock_orientation.equals("none") ) {
+		if( !lock_orientation.equals("none") && photo_mode != MyApplicationInterface.PhotoMode.Panorama ) {
+			// panorama locks to portrait, but don't want to display that in the toast
 			String [] entries_array = getResources().getStringArray(R.array.preference_lock_orientation_entries);
 			String [] values_array = getResources().getStringArray(R.array.preference_lock_orientation_values);
 			int index = Arrays.asList(values_array).indexOf(lock_orientation);
@@ -4701,8 +4786,18 @@ public class MainActivity extends Activity {
     		permissionHandler.requestLocationPermission();
         }
 	}
-	
-	@SuppressWarnings("deprecation")
+
+	private void initGyroSensors() {
+		if( MyDebug.LOG )
+			Log.d(TAG, "initGyroSensors");
+		if( applicationInterface.getPhotoMode() == MyApplicationInterface.PhotoMode.Panorama ) {
+			applicationInterface.getGyroSensor().enableSensors();
+		}
+		else {
+			applicationInterface.getGyroSensor().disableSensors();
+		}
+	}
+
 	void speak(String text) {
         if( textToSpeech != null && textToSpeechSuccess ) {
         	textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null);
@@ -4710,7 +4805,7 @@ public class MainActivity extends Activity {
 	}
 
 	@Override
-	public void onRequestPermissionsResult(int requestCode, @NonNull String permissions[], @NonNull int[] grantResults) {
+	public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
 		if( MyDebug.LOG )
 			Log.d(TAG, "onRequestPermissionsResult: requestCode " + requestCode);
 		permissionHandler.onRequestPermissionsResult(requestCode, grantResults);

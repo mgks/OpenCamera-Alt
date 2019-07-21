@@ -35,6 +35,7 @@ import android.location.Address;
 import android.location.Geocoder;
 import android.location.Location;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
@@ -45,6 +46,7 @@ import android.os.ParcelFileDescriptor;
 import android.preference.PreferenceManager;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.Pair;
 import android.view.MotionEvent;
@@ -75,7 +77,12 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	private final DrawPreview drawPreview;
 	private final ImageSaver imageSaver;
 
-	private final static float panorama_pics_per_screen = 3.0f;
+	private final static float panorama_pics_per_screen = 3.33333f;
+	private int n_capture_images = 0; // how many calls to onPictureTaken() since the last call to onCaptureStarted()
+	private int n_capture_images_raw = 0; // how many calls to onRawPictureTaken() since the last call to onCaptureStarted()
+	private int n_panorama_pics = 0;
+	private final static int max_panorama_pics_c = 10;
+	private boolean panorama_pic_accepted; // whether the last panorama picture was accepted, or else needs to be retaken
 
 	private File last_video_file = null;
 	private Uri last_video_file_saf = null;
@@ -124,10 +131,12 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	private final ToastBoxer photo_delete_toast = new ToastBoxer();
 
 	// camera properties which are saved in bundle, but not stored in preferences (so will be remembered if the app goes into background, but not after restart)
-	private int cameraId = 0;
+	private final static int cameraId_default = 0;
+	private int cameraId = cameraId_default;
+	private final static String nr_mode_default = "preference_nr_mode_normal";
+	private String nr_mode = nr_mode_default;
 	// camera properties that aren't saved even in the bundle; these should be initialised/reset in reset()
 	private int zoom_factor; // don't save zoom, as doing so tends to confuse users; other camera applications don't seem to save zoom when pause/resuming
-	private String nr_mode;
 
 	MyApplicationInterface(MainActivity main_activity, Bundle savedInstanceState) {
 		long debug_time = 0;
@@ -154,9 +163,12 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			// load the things we saved in onSaveInstanceState().
             if( MyDebug.LOG )
                 Log.d(TAG, "read from savedInstanceState");
-    		cameraId = savedInstanceState.getInt("cameraId", 0);
+    		cameraId = savedInstanceState.getInt("cameraId", cameraId_default);
 			if( MyDebug.LOG )
 				Log.d(TAG, "found cameraId: " + cameraId);
+			nr_mode = savedInstanceState.getString("nr_mode", nr_mode_default);
+			if( MyDebug.LOG )
+				Log.d(TAG, "found nr_mode: " + nr_mode);
         }
 
 		if( MyDebug.LOG )
@@ -173,6 +185,9 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		if( MyDebug.LOG )
 			Log.d(TAG, "save cameraId: " + cameraId);
     	state.putInt("cameraId", cameraId);
+		if( MyDebug.LOG )
+			Log.d(TAG, "save nr_mode: " + nr_mode);
+		state.putString("nr_mode", nr_mode);
 	}
 	
 	void onDestroy() {
@@ -383,6 +398,47 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 
     @Override
 	public Pair<Integer, Integer> getCameraResolutionPref() {
+		if( getPhotoMode() == PhotoMode.Panorama ) {
+			List<CameraController.Size> sizes = main_activity.getPreview().getSupportedPictureSizes(false);
+			final int max_width_c = 2080;
+			boolean found = false;
+			CameraController.Size best_size = null;
+			// find largest width <= max_width_c with aspect ratio 4:3
+			for(CameraController.Size size : sizes) {
+				if( size.width <= max_width_c ) {
+					double aspect_ratio = ((double)size.width) / (double)size.height;
+					if( Math.abs(aspect_ratio - 4.0/3.0) < 1.0e-5 ) {
+						if( !found || size.width > best_size.width ) {
+							found = true;
+							best_size = size;
+						}
+					}
+				}
+			}
+			if( found ) {
+				return new Pair<>(best_size.width, best_size.height);
+			}
+			// else find largest width <= max_width_c
+			for(CameraController.Size size : sizes) {
+				if( size.width <= max_width_c ) {
+					if( !found || size.width > best_size.width ) {
+						found = true;
+						best_size = size;
+					}
+				}
+			}
+			if( found ) {
+				return new Pair<>(best_size.width, best_size.height);
+			}
+			// else find smallest width
+			for(CameraController.Size size : sizes) {
+				if( !found || size.width < best_size.width ) {
+					found = true;
+					best_size = size;
+				}
+			}
+			return new Pair<>(best_size.width, best_size.height);
+		}
 		String resolution_value = sharedPreferences.getString(PreferenceKeys.getResolutionPreferenceKey(cameraId), "");
 		if( MyDebug.LOG )
 			Log.d(TAG, "resolution_value: " + resolution_value);
@@ -709,14 +765,17 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		video_max_filesize.max_filesize = getVideoMaxFileSizeUserPref();
 		video_max_filesize.auto_restart = getVideoRestartMaxFileSizeUserPref();
 		
-		/* Also if using internal memory without storage access framework, try to set the max filesize so we don't run out of space.
-		   This is the only way to avoid the problem where videos become corrupt when run out of space - MediaRecorder doesn't stop on
-		   its own, and no error is given!
-		   If using SD card, it's not reliable to get the free storage (see https://sourceforge.net/p/opencamera/tickets/153/ ).
-		   If using storage access framework, in theory we could check if this was on internal storage, but risk of getting it wrong...
-		   so seems safest to leave (the main reason for using SAF is for SD cards, anyway).
+		/* Try to set the max filesize so we don't run out of space.
+		   If using SD card without storage access framework, it's not reliable to get the free storage
+		   (see https://sourceforge.net/p/opencamera/tickets/153/ ).
+		   If using Storage Access Framework, getting the available space seems to be reliable for
+		   internal storage or external SD card.
 		   */
-		if( !storageUtils.isUsingSAF() ) {
+		boolean set_max_filesize;
+		if( storageUtils.isUsingSAF() ) {
+			set_max_filesize = true;
+		}
+		else {
     		String folder_name = storageUtils.getSaveLocation();
     		if( MyDebug.LOG )
     			Log.d(TAG, "saving to: " + folder_name);
@@ -732,40 +791,51 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     			if( folder_name.startsWith( storage.getAbsolutePath() ) )
     				is_internal = true;
     		}
-    		if( is_internal ) {
-        		if( MyDebug.LOG )
-        			Log.d(TAG, "using internal storage");
-        		long free_memory = main_activity.freeMemory() * 1024 * 1024;
-        		final long min_free_memory = 50000000; // how much free space to leave after video
-        		// min_free_filesize is the minimum value to set for max file size:
-        		//   - no point trying to create a really short video
-        		//   - too short videos can end up being corrupted
-        		//   - also with auto-restart, if this is too small we'll end up repeatedly restarting and creating shorter and shorter videos
-        		final long min_free_filesize = 20000000;
-        		long available_memory = free_memory - min_free_memory;
-        		if( test_set_available_memory ) {
-        			available_memory = test_available_memory;
-        		}
-        		if( MyDebug.LOG ) {
-        			Log.d(TAG, "free_memory: " + free_memory);
-        			Log.d(TAG, "available_memory: " + available_memory);
-        		}
-        		if( available_memory > min_free_filesize ) {
-        			if( video_max_filesize.max_filesize == 0 || video_max_filesize.max_filesize > available_memory ) {
-        				video_max_filesize.max_filesize = available_memory;
-        				// still leave auto_restart set to true - because even if we set a max filesize for running out of storage, the video may still hit a maximum limit beforehand, if there's a device max limit set (typically ~2GB)
-        				if( MyDebug.LOG )
-        					Log.d(TAG, "set video_max_filesize to avoid running out of space: " + video_max_filesize);
-        			}
-        		}
-        		else {
-    				if( MyDebug.LOG )
-    					Log.e(TAG, "not enough free storage to record video");
-        			throw new NoFreeStorageException();
-        		}
-    		}
+			if( MyDebug.LOG )
+				Log.d(TAG, "using internal storage?" + is_internal);
+    		set_max_filesize = is_internal;
 		}
-		
+		if( set_max_filesize ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "try setting max filesize");
+			long free_memory = storageUtils.freeMemory();
+			if( free_memory >= 0 ) {
+				free_memory = free_memory * 1024 * 1024;
+
+				final long min_free_memory = 50000000; // how much free space to leave after video
+				// min_free_filesize is the minimum value to set for max file size:
+				//   - no point trying to create a really short video
+				//   - too short videos can end up being corrupted
+				//   - also with auto-restart, if this is too small we'll end up repeatedly restarting and creating shorter and shorter videos
+				final long min_free_filesize = 20000000;
+				long available_memory = free_memory - min_free_memory;
+				if( test_set_available_memory ) {
+					available_memory = test_available_memory;
+				}
+				if( MyDebug.LOG ) {
+					Log.d(TAG, "free_memory: " + free_memory);
+					Log.d(TAG, "available_memory: " + available_memory);
+				}
+				if( available_memory > min_free_filesize ) {
+					if( video_max_filesize.max_filesize == 0 || video_max_filesize.max_filesize > available_memory ) {
+						video_max_filesize.max_filesize = available_memory;
+						// still leave auto_restart set to true - because even if we set a max filesize for running out of storage, the video may still hit a maximum limit beforehand, if there's a device max limit set (typically ~2GB)
+						if( MyDebug.LOG )
+							Log.d(TAG, "set video_max_filesize to avoid running out of space: " + video_max_filesize);
+					}
+				}
+				else {
+					if( MyDebug.LOG )
+						Log.e(TAG, "not enough free storage to record video");
+					throw new NoFreeStorageException();
+				}
+			}
+			else {
+				if( MyDebug.LOG )
+					Log.d(TAG, "can't determine remaining free space");
+			}
+		}
+
 		return video_max_filesize;
 	}
 
@@ -791,6 +861,8 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     
     @Override
     public String getLockOrientationPref() {
+		if( getPhotoMode() == PhotoMode.Panorama )
+			return "portrait"; // for now panorama only supports portrait
     	return sharedPreferences.getString(PreferenceKeys.getLockOrientationPreferenceKey(), "none");
     }
 
@@ -833,6 +905,8 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     
     @Override
     public boolean getShutterSoundPref() {
+		if( getPhotoMode() == PhotoMode.Panorama )
+			return false;
     	return sharedPreferences.getBoolean(PreferenceKeys.getShutterSoundPreferenceKey(), true);
     }
 
@@ -988,31 +1062,18 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			n_jpegs = 1;
 		}
 		else {
-			if( main_activity.getPreview().supportsRaw() && this.getRawPref() == RawPref.RAWPREF_JPEG_DNG ) {
-				// note, even in RAW only mode, the CameraController will still take JPEG+RAW (we still need to JPEG to
-				// generate a bitmap from for thumbnail and pause preview option), so this still generates a request in
-				// the ImageSaver
-				n_raw = 1;
-				n_jpegs = 1;
-			}
-			else {
-				n_raw = 0;
-				n_jpegs = 1;
-			}
+			n_jpegs = 1; // default
 
 			if( main_activity.getPreview().supportsExpoBracketing() && this.isExpoBracketingPref() ) {
-				n_raw = 0;
 				n_jpegs = this.getExpoBracketingNImagesPref();
 			}
 			else if( main_activity.getPreview().supportsFocusBracketing() && this.isFocusBracketingPref() ) {
 				// focus bracketing mode always avoids blocking the image queue, no matter how many images are being taken
 				// so all that matters is that we can take at least 1 photo (for the first shot)
-				n_raw = 0;
 				//n_jpegs = this.getFocusBracketingNImagesPref();
 				n_jpegs = 1;
 			}
 			else if( main_activity.getPreview().supportsBurst() && this.isCameraBurstPref() ) {
-				n_raw = 0;
 				if( this.getBurstForNoiseReduction() ) {
 					if( this.getNRModePref() == ApplicationInterface.NRModePref.NRMODE_LOW_LIGHT ) {
 						n_jpegs = CameraController.N_IMAGES_NR_DARK_LOW_LIGHT;
@@ -1025,9 +1086,19 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 					n_jpegs = this.getBurstNImages();
 				}
 			}
+
+			if( main_activity.getPreview().supportsRaw() && this.getRawPref() == RawPref.RAWPREF_JPEG_DNG ) {
+				// note, even in RAW only mode, the CameraController will still take JPEG+RAW (we still need to JPEG to
+				// generate a bitmap from for thumbnail and pause preview option), so this still generates a request in
+				// the ImageSaver
+				n_raw = n_jpegs;
+			}
+			else {
+				n_raw = 0;
+			}
 		}
 
-		int photo_cost = imageSaver.computePhotoCost(n_raw > 0, n_jpegs);
+		int photo_cost = imageSaver.computePhotoCost(n_raw, n_jpegs);
     	if( imageSaver.queueWouldBlock(photo_cost) ) {
 			if( MyDebug.LOG )
 				Log.d(TAG, "canTakeNewPhoto: no, as queue would block");
@@ -1086,10 +1157,10 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	}
 
 	@Override
-	public boolean imageQueueWouldBlock(boolean has_raw, int n_jpegs) {
+	public boolean imageQueueWouldBlock(int n_raw, int n_jpegs) {
 		if( MyDebug.LOG )
 			Log.d(TAG, "imageQueueWouldBlock");
-		return imageSaver.queueWouldBlock(has_raw, n_jpegs);
+		return imageSaver.queueWouldBlock(n_raw, n_jpegs);
 	}
 
 	@Override
@@ -1151,15 +1222,15 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	}
 
     public String getNRMode() {
-		if( MyDebug.LOG )
-			Log.d(TAG, "nr_mode: " + nr_mode);
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "nr_mode: " + nr_mode);*/
 		return nr_mode;
 	}
 
     @Override
     public NRModePref getNRModePref() {
-		if( MyDebug.LOG )
-			Log.d(TAG, "nr_mode: " + nr_mode);
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "nr_mode: " + nr_mode);*/
 		switch( nr_mode ) {
 			case "preference_nr_mode_low_light":
 				return NRModePref.NRMODE_LOW_LIGHT;
@@ -1271,7 +1342,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		if( noise_reduction && main_activity.supportsNoiseReduction() )
 			return PhotoMode.NoiseReduction;
 		boolean panorama = photo_mode_pref.equals("preference_photo_mode_panorama");
-		if( panorama && main_activity.supportsPanorama() )
+		if( panorama && !main_activity.getPreview().isVideo() && main_activity.supportsPanorama() )
 			return PhotoMode.Panorama;
 		return PhotoMode.Standard;
     }
@@ -1293,9 +1364,34 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		}
     }
 
-	private static boolean photoModeSupportsRaw(PhotoMode photo_mode) {
-    	// RAW only supported for Std or DRO modes
-	    return photo_mode == PhotoMode.Standard || photo_mode == PhotoMode.DRO;
+	/** Returns whether RAW is currently allowed, even if RAW is enabled in the preference (RAW
+	 *  isn't allowed for some photo modes, or in video mode, or when called from an intent).
+	 *  Note that this doesn't check whether RAW is supported by the camera.
+	 */
+	public boolean isRawAllowed(PhotoMode photo_mode) {
+		if( isImageCaptureIntent() )
+			return false;
+		if( main_activity.getPreview().isVideo() )
+			return false; // video snapshot mode
+		//return photo_mode == PhotoMode.Standard || photo_mode == PhotoMode.DRO;
+		if( photo_mode == PhotoMode.Standard || photo_mode == PhotoMode.DRO ) {
+			return true;
+		}
+		else if( photo_mode == PhotoMode.ExpoBracketing ) {
+			return sharedPreferences.getBoolean(PreferenceKeys.AllowRawForExpoBracketingPreferenceKey, true) &&
+					main_activity.supportsBurstRaw();
+		}
+		else if( photo_mode == PhotoMode.HDR ) {
+			// for HDR, RAW is only relevant if we're going to be saving the base expo images (otherwise there's nothing to save)
+			return sharedPreferences.getBoolean(PreferenceKeys.HDRSaveExpoPreferenceKey, false) &&
+					sharedPreferences.getBoolean(PreferenceKeys.AllowRawForExpoBracketingPreferenceKey, true) &&
+					main_activity.supportsBurstRaw();
+		}
+		else if( photo_mode == PhotoMode.FocusBracketing ) {
+			return sharedPreferences.getBoolean(PreferenceKeys.AllowRawForFocusBracketingPreferenceKey, true) &&
+					main_activity.supportsBurstRaw();
+		}
+		return false;
     }
 
 	/** Return whether to capture JPEG, or RAW+JPEG.
@@ -1305,12 +1401,8 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	 */
 	@Override
 	public RawPref getRawPref() {
-    	if( isImageCaptureIntent() )
-    		return RawPref.RAWPREF_JPEG_ONLY;
-		if( main_activity.getPreview().isVideo() )
-    		return RawPref.RAWPREF_JPEG_ONLY; // video snapshot mode
     	PhotoMode photo_mode = getPhotoMode();
-    	if( photoModeSupportsRaw(photo_mode) ) {
+    	if( isRawAllowed(photo_mode) ) {
 			switch( sharedPreferences.getString(PreferenceKeys.RawPreferenceKey, "preference_raw_no") ) {
 				case "preference_raw_yes":
 				case "preference_raw_only":
@@ -1331,11 +1423,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	 *  without causing an infinite loop!
 	 */
 	boolean isRawOnly(PhotoMode photo_mode) {
-    	if( isImageCaptureIntent() )
-    		return false;
-		if( main_activity.getPreview().isVideo() )
-    		return false; // video snapshot mode
-    	if( photoModeSupportsRaw(photo_mode) ) {
+    	if( isRawAllowed(photo_mode) ) {
 			switch( sharedPreferences.getString(PreferenceKeys.RawPreferenceKey, "preference_raw_no") ) {
 				case "preference_raw_only":
 					return true;
@@ -1368,6 +1456,11 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	}
 
 	@Override
+	public boolean isPreviewInBackground() {
+		return main_activity.isCameraInBackground();
+	}
+
+	@Override
     public boolean isTestAlwaysFocus() {
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "isTestAlwaysFocus: " + main_activity.is_test);
@@ -1397,6 +1490,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			Log.d(TAG, "startPanorama");
 		gyroSensor.startRecording();
 		n_panorama_pics = 0;
+		panorama_pic_accepted = false;
 	}
 
 	void stopPanorama() {
@@ -1410,13 +1504,20 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		imageSaver.finishImageAverage(do_in_background);
 	}
 
-	void setNextPanoramaPoint() {
+	private void setNextPanoramaPoint(boolean repeat) {
 		if( MyDebug.LOG )
 			Log.d(TAG, "setNextPanoramaPoint");
 		float camera_angle_y = main_activity.getPreview().getViewAngleY(false);
-		n_panorama_pics++;
+		if( !repeat )
+			n_panorama_pics++;
 		if( MyDebug.LOG )
 			Log.d(TAG, "n_panorama_pics is now: " + n_panorama_pics);
+		if( n_panorama_pics == max_panorama_pics_c ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "reached max panorama limit");
+			stopPanorama();
+			return;
+		}
 		float angle = (float) Math.toRadians(camera_angle_y) * n_panorama_pics;
 		setNextPanoramaPoint((float) Math.sin(angle / panorama_pics_per_screen), 0.0f, (float) -Math.cos(angle / panorama_pics_per_screen));
 	}
@@ -1432,11 +1533,14 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			public void onAchieved() {
 				if( MyDebug.LOG )
 					Log.d(TAG, "TargetCallback.onAchieved");
-				// Clear the target so we avoid risk of multiple callbacks - but note we don't call
+				// Disable the target callback so we avoid risk of multiple callbacks - but note we don't call
 				// clearPanoramaPoint(), as we don't want to call drawPreview.clearGyroDirectionMarker()
 				// at this stage (looks better to keep showing the target market on-screen whilst photo
 				// is being taken, user more likely to keep the device still).
-				gyroSensor.clearTarget();
+				// Also we still keep the target active (and don't call clearTarget() so we can monitor if
+				// the target is still achieved or not (for panorama_pic_accepted).
+				//gyroSensor.clearTarget();
+				gyroSensor.disableTargetCallback();
 				main_activity.takePicturePressed(false, false);
 			}
 		});
@@ -1563,9 +1667,9 @@ public class MyApplicationInterface extends BasicApplicationInterface {
                     }
 
                     // build subtitles
-					String subtitles = "";
+					StringBuilder subtitles = new StringBuilder();
 					if( datetime_stamp.length() > 0 )
-						subtitles += datetime_stamp + "\n";
+						subtitles.append(datetime_stamp).append("\n");
 
 					if( gps_stamp.length() > 0 ) {
                         Address address = null;
@@ -1600,14 +1704,14 @@ public class MyApplicationInterface extends BasicApplicationInterface {
                             for(int i=0;i<=address.getMaxAddressLineIndex();i++) {
                                 // write in forward order
                                 String addressLine = address.getAddressLine(i);
-                                subtitles += addressLine + "\n";
+                                subtitles.append(addressLine).append("\n");
                             }
                         }
 
                         if( address == null || preference_stamp_geo_address.equals("preference_stamp_geo_address_both") ) {
                             if( MyDebug.LOG )
                                 Log.d(TAG, "display gps coords");
-                            subtitles += gps_stamp + "\n";
+                            subtitles.append(gps_stamp).append("\n");
                         }
                         else if( store_geo_direction ) {
                             if( MyDebug.LOG )
@@ -1616,7 +1720,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
                             if( gps_stamp.length() > 0 ) {
                                 if( MyDebug.LOG )
                                     Log.d(TAG, "gps_stamp is now: " + gps_stamp);
-                                subtitles += gps_stamp + "\n";
+                                subtitles.append(gps_stamp).append("\n");
                             }
                         }
                     }
@@ -1660,7 +1764,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 								writer.append(" --> ");
 								writer.append(subtitle_time_to);
 								writer.append('\n');
-								writer.append(subtitles); // subtitles should include the '\n' at the end
+								writer.append(subtitles.toString()); // subtitles should include the '\n' at the end
 								writer.append('\n'); // additional newline to indicate end of this subtitle
 								writer.flush();
 								// n.b., we flush rather than closing/reopening the writer each time, as appending doesn't seem to work with storage access framework
@@ -1977,14 +2081,12 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     	drawPreview.turnFrontScreenFlashOn();
     }
 
-    private int n_capture_images = 0; // how many calls to onPictureTaken() since the last call to onCaptureStarted()
-	private int n_panorama_pics = 0;
-
 	@Override
 	public void onCaptureStarted() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "onCaptureStarted");
 		n_capture_images = 0;
+		n_capture_images_raw = 0;
 		drawPreview.onCaptureStarted();
 	}
 
@@ -2006,9 +2108,28 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			imageSaver.finishImageAverage(do_in_background);
 		}
 		else if( photo_mode == MyApplicationInterface.PhotoMode.Panorama && gyroSensor.isRecording() ) {
-			if (MyDebug.LOG)
-				Log.d(TAG, "set next panorama point");
-			this.setNextPanoramaPoint();
+			if( panorama_pic_accepted ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "set next panorama point");
+				this.setNextPanoramaPoint(false);
+			}
+			else {
+				if( MyDebug.LOG )
+					Log.d(TAG, "panorama pic wasn't accepted");
+				this.setNextPanoramaPoint(true);
+			}
+		}
+		else if( photo_mode == PhotoMode.FocusBracketing ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "focus bracketing completed");
+			if( getShutterSoundPref() ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "play completion sound");
+				MediaPlayer player = MediaPlayer.create(getContext(), Settings.System.DEFAULT_NOTIFICATION_URI);
+				if( player != null ) {
+					player.start();
+				}
+			}
 		}
 
 		// call this, so that if pause-preview-after-taking-photo option is set, we remove the "taking photo" border indicator straight away
@@ -2056,11 +2177,6 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		}
 	}
 
-	@Override
-	public void layoutUI() {
-		main_activity.getMainUI().layoutUI();
-	}
-	
 	@Override
 	public void multitouchZoom(int new_zoom) {
 		main_activity.getMainUI().setSeekbarZoom(new_zoom);
@@ -2173,6 +2289,10 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 	
     @Override
 	public void setCameraResolutionPref(int width, int height) {
+        if( getPhotoMode() == PhotoMode.Panorama ) {
+            // in Panorama mode we'll have set a different resolution to the user setting, so don't want that to then be saved!
+            return;
+        }
 		String resolution_value = width + " " + height;
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "save new resolution_value: " + resolution_value);
@@ -2257,12 +2377,14 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		if( MyDebug.LOG )
 			Log.d(TAG, "reset");
 		this.zoom_factor = 0;
-		this.nr_mode = "preference_nr_mode_normal";
 	}
 
     @Override
     public void onDrawPreview(Canvas canvas) {
-    	drawPreview.onDrawPreview(canvas);
+		if( !main_activity.isCameraInBackground() ) {
+			// no point drawing when in background (e.g., settings open)
+			drawPreview.onDrawPreview(canvas);
+		}
     }
 
 	public enum Alignment {
@@ -2367,6 +2489,18 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			image_capture_intent = true;
 		}
 		return image_capture_intent;
+	}
+
+	/** Whether the photos will be part of a burst, even if we're receiving via the non-burst callbacks.
+	 */
+	private boolean forceSuffix(PhotoMode photo_mode) {
+		// focus bracketing and fast burst shots come is as separate requests, so we need to make sure we get the filename suffixes right
+		boolean force_suffix = photo_mode == PhotoMode.FocusBracketing || photo_mode == PhotoMode.FastBurst ||
+				(
+						main_activity.getPreview().getCameraController() != null &&
+								main_activity.getPreview().getCameraController().isCapturingBurst()
+				);
+		return force_suffix;
 	}
 
     /** Saves the supplied image(s)
@@ -2474,10 +2608,20 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			// must be in photo snapshot while recording video mode, only support standard photo mode
 			photo_mode = PhotoMode.Standard;
 		}
-		if( photo_mode == PhotoMode.NoiseReduction || photo_mode == PhotoMode.Panorama ) {
+
+		if( photo_mode == PhotoMode.Panorama && gyroSensor.isRecording() && gyroSensor.hasTarget() && !gyroSensor.isTargetAchieved() ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "ignore panorama image as target no longer achieved!");
+			// n.b., gyroSensor.hasTarget() will be false if this is the first picture in the panorama series
+			panorama_pic_accepted = false;
+			success = true; // still treat as success
+		}
+		else if( photo_mode == PhotoMode.NoiseReduction || photo_mode == PhotoMode.Panorama ) {
 			boolean first_image = false;
-			if( photo_mode == PhotoMode.Panorama )
+			if( photo_mode == PhotoMode.Panorama ) {
+				panorama_pic_accepted = true;
 				first_image = n_panorama_pics == 0;
+			}
 			else
 				first_image = n_capture_images == 1;
 			if( first_image ) {
@@ -2522,12 +2666,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 		}
 		else {
 		    boolean is_hdr = photo_mode == PhotoMode.DRO || photo_mode == PhotoMode.HDR;
-            // focus bracketing and fast burst shots come is as separate requests, so we need to make sure we get the filename suffixes right
-		    boolean force_suffix = photo_mode == PhotoMode.FocusBracketing || photo_mode == PhotoMode.FastBurst ||
-					(
-						main_activity.getPreview().getCameraController() != null &&
-						main_activity.getPreview().getCameraController().isCapturingBurst()
-					);
+		    boolean force_suffix = forceSuffix(photo_mode);
 			success = imageSaver.saveImageJpeg(do_in_background, is_hdr,
 					force_suffix,
 					// N.B., n_capture_images will be 1 for first image, not 0, so subtract 1 so we start off from _0.
@@ -2618,16 +2757,52 @@ public class MyApplicationInterface extends BasicApplicationInterface {
 			Log.d(TAG, "onRawPictureTaken");
         System.gc();
 
+		n_capture_images_raw++;
+		if( MyDebug.LOG )
+			Log.d(TAG, "n_capture_images_raw is now " + n_capture_images_raw);
+
 		boolean do_in_background = saveInBackground(false);
 
-		boolean success = imageSaver.saveImageRaw(do_in_background, raw_image, current_date);
+		PhotoMode photo_mode = getPhotoMode();
+		if( main_activity.getPreview().isVideo() ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "snapshot mode");
+			// must be in photo snapshot while recording video mode, only support standard photo mode
+			// (RAW not supported anyway for video snapshot mode, but have this code just to be safe)
+			photo_mode = PhotoMode.Standard;
+		}
+		boolean force_suffix = forceSuffix(photo_mode);
+		// N.B., n_capture_images_raw will be 1 for first image, not 0, so subtract 1 so we start off from _0.
+		// (It wouldn't be a huge problem if we did start from _1, but it would be inconsistent with the naming
+		// of images where images.size() > 1 (e.g., expo bracketing mode) where we also start from _0.)
+		int suffix_offset = force_suffix ? (n_capture_images_raw-1) : 0;
+		boolean success = imageSaver.saveImageRaw(do_in_background, force_suffix, suffix_offset, raw_image, current_date);
 		
 		if( MyDebug.LOG )
 			Log.d(TAG, "onRawPictureTaken complete");
 		return success;
 	}
-    
-    void addLastImage(File file, boolean share) {
+
+	@Override
+	public boolean onRawBurstPictureTaken(List<RawImage> raw_images, Date current_date) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "onRawBurstPictureTaken");
+		System.gc();
+
+		boolean do_in_background = saveInBackground(false);
+
+		// currently we don't ever do post processing with RAW burst images, so just save them all
+		boolean success = true;
+		for(int i=0;i<raw_images.size() && success;i++) {
+			success = imageSaver.saveImageRaw(do_in_background, true, i, raw_images.get(i), current_date);
+		}
+
+		if( MyDebug.LOG )
+			Log.d(TAG, "onRawBurstPictureTaken complete");
+		return success;
+	}
+
+	void addLastImage(File file, boolean share) {
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "addLastImage: " + file);
 			Log.d(TAG, "share?: " + share);

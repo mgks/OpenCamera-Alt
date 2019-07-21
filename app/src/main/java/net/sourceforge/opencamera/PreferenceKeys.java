@@ -81,6 +81,10 @@ public class PreferenceKeys {
 
 	public static final String RawPreferenceKey = "preference_raw";
 
+	public static final String AllowRawForExpoBracketingPreferenceKey = "preference_raw_expo_bracketing";
+
+	public static final String AllowRawForFocusBracketingPreferenceKey = "preference_raw_focus_bracketing";
+
 	public static final String ExpoBracketingNImagesPreferenceKey = "preference_expo_bracketing_n_images";
 
 	public static final String ExpoBracketingStopsPreferenceKey = "preference_expo_bracketing_stops";
@@ -225,6 +229,8 @@ public class PreferenceKeys {
 
 	public static final String ShowFaceDetectionPreferenceKey = "preference_show_face_detection";
 
+	public static final String ShowCycleFlashPreferenceKey = "preference_show_cycle_flash";
+
 	public static final String ShowAutoLevelPreferenceKey = "preference_show_auto_level";
 
 	public static final String ShowStampPreferenceKey = "preference_show_stamp";
@@ -233,6 +239,8 @@ public class PreferenceKeys {
 
 	public static final String ShowStoreLocationPreferenceKey = "preference_show_store_location";
 
+	public static final String ShowCycleRawPreferenceKey = "preference_show_cycle_raw";
+
 	public static final String ShowWhiteBalanceLockPreferenceKey = "preference_show_white_balance_lock";
 
 	public static final String ShowExposureLockPreferenceKey = "preference_show_exposure_lock";
@@ -240,6 +248,14 @@ public class PreferenceKeys {
 	public static final String ShowZoomPreferenceKey = "preference_show_zoom";
 
 	public static final String ShowISOPreferenceKey = "preference_show_iso";
+
+	public static final String HistogramPreferenceKey = "preference_histogram";
+
+    public static final String ZebraStripesPreferenceKey = "preference_zebra_stripes";
+
+	public static final String FocusPeakingPreferenceKey = "preference_focus_peaking";
+
+	public static final String FocusPeakingColorPreferenceKey = "preference_focus_peaking_color";
 
 	public static final String ShowVideoMaxAmpPreferenceKey = "preference_show_video_max_amp";
 

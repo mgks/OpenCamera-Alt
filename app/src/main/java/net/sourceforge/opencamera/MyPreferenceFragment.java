@@ -96,7 +96,7 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 			Log.d(TAG, "nCameras: " + nCameras);
 
 		final String camera_api = bundle.getString("camera_api");
-		
+
 		final boolean using_android_l = bundle.getBoolean("using_android_l");
 		if( MyDebug.LOG )
 			Log.d(TAG, "using_android_l: " + using_android_l);
@@ -112,6 +112,10 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_category_camera_effects");
         	pg.removePreference(pref);
 		}*/
+
+		final boolean supports_flash = bundle.getBoolean("supports_flash");
+		if( MyDebug.LOG )
+			Log.d(TAG, "supports_flash: " + supports_flash);
 
 		//readFromBundle(bundle, "color_effects", Preview.getColorEffectPreferenceKey(), Camera.Parameters.EFFECT_NONE, "preference_category_camera_effects");
 		//readFromBundle(bundle, "scene_modes", Preview.getSceneModePreferenceKey(), Camera.Parameters.SCENE_MODE_AUTO, "preference_category_camera_effects");
@@ -277,10 +281,13 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 			lp.setEntries(entries);
 			lp.setEntryValues(values);
 		}
-		
+
 		final boolean supports_raw = bundle.getBoolean("supports_raw");
 		if( MyDebug.LOG )
 			Log.d(TAG, "supports_raw: " + supports_raw);
+		final boolean supports_burst_raw = bundle.getBoolean("supports_burst_raw");
+		if( MyDebug.LOG )
+			Log.d(TAG, "supports_burst_raw: " + supports_burst_raw);
 
 		if( !supports_raw ) {
 			Preference pref = findPreference("preference_raw");
@@ -336,6 +343,14 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
                 	return true;
                 }
             });        	
+		}
+
+		if( !( supports_raw && supports_burst_raw ) ) {
+			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_photo_settings");
+			Preference pref = findPreference("preference_raw_expo_bracketing");
+			pg.removePreference(pref);
+			pref = findPreference("preference_raw_focus_bracketing");
+			pg.removePreference(pref);
 		}
 
 		final boolean supports_hdr = bundle.getBoolean("supports_hdr");
@@ -535,14 +550,26 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 
         if( !using_android_l ) {
         	Preference pref = findPreference("preference_focus_assist");
-        	PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_gui");
+        	PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_preview");
         	pg.removePreference(pref);
         }
 
-        if( !supports_exposure_lock ) {
+		if( !supports_flash ) {
+			Preference pref = findPreference("preference_show_cycle_flash");
+			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_gui");
+			pg.removePreference(pref);
+		}
+
+		if( !supports_exposure_lock ) {
         	Preference pref = findPreference("preference_show_exposure_lock");
         	PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_gui");
         	pg.removePreference(pref);
+		}
+
+		if( !supports_raw ) {
+			Preference pref = findPreference("preference_show_cycle_raw");
+			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_gui");
+			pg.removePreference(pref);
 		}
 
         if( !supports_white_balance_lock ) {
@@ -572,11 +599,31 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 		setSummary("preference_save_video_prefix");
 		setSummary("preference_textstamp");
 
-        if( !using_android_l ) {
-        	Preference pref = findPreference("preference_show_iso");
-        	PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_gui");
-        	pg.removePreference(pref);
-        }
+		if( !using_android_l ) {
+			Preference pref = findPreference("preference_show_iso");
+			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_preview");
+			pg.removePreference(pref);
+		}
+
+		final boolean supports_preview_bitmaps = bundle.getBoolean("supports_preview_bitmaps");
+		if( MyDebug.LOG )
+			Log.d(TAG, "supports_preview_bitmaps: " + supports_preview_bitmaps);
+
+		if( !supports_preview_bitmaps ) {
+			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_preview");
+
+			Preference pref = findPreference("preference_histogram");
+			pg.removePreference(pref);
+
+			pref = findPreference("preference_zebra_stripes");
+			pg.removePreference(pref);
+
+			pref = findPreference("preference_focus_peaking");
+			pg.removePreference(pref);
+
+			pref = findPreference("preference_focus_peaking_color");
+			pg.removePreference(pref);
+		}
 
 		final boolean supports_photo_video_recording = bundle.getBoolean("supports_photo_video_recording");
 		if( MyDebug.LOG )
@@ -613,6 +660,13 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
         	Preference pref = findPreference("preference_video_log");
 			PreferenceGroup pg = (PreferenceGroup)this.findPreference("preference_screen_video_settings");
         	pg.removePreference(pref);
+		}
+
+		final float camera_view_angle_x = bundle.getFloat("camera_view_angle_x");
+		final float camera_view_angle_y = bundle.getFloat("camera_view_angle_y");
+		if( MyDebug.LOG ) {
+			Log.d(TAG, "camera_view_angle_x: " + camera_view_angle_x);
+			Log.d(TAG, "camera_view_angle_y: " + camera_view_angle_y);
 		}
 
 		{
@@ -1053,6 +1107,9 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
 						about_string.append(tonemap_max_curve_points);
 						about_string.append("\nCan disable shutter sound?: ");
 						about_string.append(getString(can_disable_shutter_sound ? R.string.about_available : R.string.about_not_available));
+
+						about_string.append("\nCamera view angle: " + camera_view_angle_x + " , " + camera_view_angle_y);
+
                         about_string.append("\nFlash modes: ");
                 		String [] flash_values = bundle.getStringArray("flash_values");
                 		if( flash_values != null && flash_values.length > 0 ) {

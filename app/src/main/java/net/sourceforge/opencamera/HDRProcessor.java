@@ -66,7 +66,11 @@ public class HDRProcessor {
 		TONEMAPALGORITHM_FILMIC,
 		TONEMAPALGORITHM_ACES
 	}
-	
+	public enum DROTonemappingAlgorithm {
+		DROALGORITHM_NONE,
+		DROALGORITHM_GAINGAMMA
+	}
+
 	public HDRProcessor(Context context) {
 		this.context = context;
 	}
@@ -335,9 +339,11 @@ public class HDRProcessor {
 	 *                      resultant image.
 	 * @param tonemapping_algorithm
 	 *                      Algorithm to use for tonemapping (if multiple images are received).
+	 * @param dro_tonemapping_algorithm
+	 *                      Algorithm to use for tonemapping (if single image is received).
 	 */
 	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-	public void processHDR(List<Bitmap> bitmaps, boolean release_bitmaps, Bitmap output_bitmap, boolean assume_sorted, SortCallback sort_cb, float hdr_alpha, int n_tiles, boolean ce_preserve_blacks, TonemappingAlgorithm tonemapping_algorithm) throws HDRProcessorException {
+	public void processHDR(List<Bitmap> bitmaps, boolean release_bitmaps, Bitmap output_bitmap, boolean assume_sorted, SortCallback sort_cb, float hdr_alpha, int n_tiles, boolean ce_preserve_blacks, TonemappingAlgorithm tonemapping_algorithm, DROTonemappingAlgorithm dro_tonemapping_algorithm) throws HDRProcessorException {
 		if( MyDebug.LOG )
 			Log.d(TAG, "processHDR");
 		if( !assume_sorted && !release_bitmaps ) {
@@ -376,7 +382,7 @@ public class HDRProcessor {
 				sort_order.add(0);
 				sort_cb.sortOrder(sort_order);
 			}
-			processSingleImage(bitmaps, release_bitmaps, output_bitmap, hdr_alpha, n_tiles, ce_preserve_blacks);
+			processSingleImage(bitmaps, release_bitmaps, output_bitmap, hdr_alpha, n_tiles, ce_preserve_blacks, dro_tonemapping_algorithm);
 			break;
 		case HDRALGORITHM_STANDARD:
 			processHDRCore(bitmaps, release_bitmaps, output_bitmap, assume_sorted, sort_cb, hdr_alpha, n_tiles, ce_preserve_blacks, tonemapping_algorithm);
@@ -934,7 +940,7 @@ public class HDRProcessor {
 	}
 
 	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-	private void processSingleImage(List<Bitmap> bitmaps, boolean release_bitmaps, Bitmap output_bitmap, float hdr_alpha, int n_tiles, boolean ce_preserve_blacks) {
+	private void processSingleImage(List<Bitmap> bitmaps, boolean release_bitmaps, Bitmap output_bitmap, float hdr_alpha, int n_tiles, boolean ce_preserve_blacks, DROTonemappingAlgorithm dro_tonemapping_algorithm) throws HDRProcessorException {
 		if( MyDebug.LOG )
 			Log.d(TAG, "processSingleImage");
 
@@ -960,41 +966,51 @@ public class HDRProcessor {
 			output_allocation = Allocation.createFromBitmap(rs, output_bitmap);
 		}
 
-		/*{
+		if( dro_tonemapping_algorithm == DROTonemappingAlgorithm.DROALGORITHM_GAINGAMMA ) {
 			// brighten?
 			int [] histo = computeHistogram(allocation, false, false);
 			HistogramInfo histogramInfo = getHistogramInfo(histo);
-			int median_brightness = histogramInfo.median_brightness;
+			int brightness = histogramInfo.median_brightness;
 			int max_brightness = histogramInfo.max_brightness;
 			if( MyDebug.LOG )
 				Log.d(TAG, "### time after computeHistogram: " + (System.currentTimeMillis() - time_s));
-			int median_target = getBrightnessTarget(median_brightness, 2, 119);
 			if( MyDebug.LOG ) {
-				Log.d(TAG, "median brightness: " + median_brightness);
-				Log.d(TAG, "median target: " + median_target);
+				Log.d(TAG, "median brightness: " + brightness);
 				Log.d(TAG, "max brightness: " + max_brightness);
 			}
-
-			if( median_target > median_brightness && max_brightness < 255 ) {
-				float gain = median_target / (float)median_brightness;
-				if( MyDebug.LOG )
-					Log.d(TAG, "gain " + gain);
-				float max_possible_value = gain*max_brightness;
-				if( MyDebug.LOG )
-					Log.d(TAG, "max_possible_value: " + max_possible_value);
-				if( max_possible_value > 255.0f ) {
-					gain = 255.0f / max_brightness;
-					if( MyDebug.LOG )
-						Log.d(TAG, "limit gain to: " + gain);
-				}
-				ScriptC_avg_brighten script = new ScriptC_avg_brighten(rs);
-				script.set_gain(gain);
-				script.forEach_avg_brighten_gain(allocation, output_allocation);
-				allocation = output_allocation; // output is now the input for subsequent operations
-				if( MyDebug.LOG )
-					Log.d(TAG, "### time after avg_brighten: " + (System.currentTimeMillis() - time_s));
+			BrightenFactors brighten_factors = computeBrightenFactors(false, 0, 0, brightness, max_brightness);
+			float gain = brighten_factors.gain;
+			float gamma = brighten_factors.gamma;
+			float low_x = brighten_factors.low_x;
+			float mid_x = brighten_factors.mid_x;
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "gain: " + gain);
+				Log.d(TAG, "gamma: " + gamma);
+				Log.d(TAG, "low_x: " + low_x);
+				Log.d(TAG, "mid_x: " + mid_x);
 			}
-		}*/
+
+			if( Math.abs(gain - 1.0) > 1.0e-5 || max_brightness != 255 || Math.abs(gamma - 1.0) > 1.0e-5 ) {
+				if( MyDebug.LOG )
+					Log.d(TAG, "apply gain/gamma");
+				//if( true )
+				//	throw new HDRProcessorException(HDRProcessorException.UNEQUAL_SIZES); // test
+
+				ScriptC_avg_brighten script = new ScriptC_avg_brighten(rs);
+				script.invoke_setBrightenParameters(gain, gamma, low_x, mid_x, max_brightness);
+
+				script.forEach_dro_brighten(allocation, output_allocation);
+
+				// output is now the input for subsequent operations
+				if( free_output_allocation ) {
+					allocation.destroy();
+					free_output_allocation = false;
+				}
+				allocation = output_allocation;
+				if( MyDebug.LOG )
+					Log.d(TAG, "### time after dro_brighten: " + (System.currentTimeMillis() - time_s));
+			}
+		}
 
 		adjustHistogram(allocation, output_allocation, width, height, hdr_alpha, n_tiles, ce_preserve_blacks, time_s);
 
@@ -1620,14 +1636,544 @@ public class HDRProcessor {
 			Log.d(TAG, "### time for processAvgMulti: " + (System.currentTimeMillis() - time_s));
 	}
 
-	public class AutoAlignmentByFeatureResult {
-	    public final int offset_x, offset_y;
-	    public final float rotation;
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private Allocation reduceBitmap(ScriptC_pyramid_blending script, Allocation allocation) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "reduceBitmap");
+		int width = allocation.getType().getX();
+		int height = allocation.getType().getY();
 
-        AutoAlignmentByFeatureResult(int offset_x, int offset_y, float rotation) {
+		Allocation reduced_allocation = Allocation.createTyped(rs, Type.createXY(rs, Element.RGBA_8888(rs), width/2, height/2));
+
+		script.set_bitmap(allocation);
+		script.forEach_reduce(reduced_allocation, reduced_allocation);
+
+		return reduced_allocation;
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private Allocation expandBitmap(ScriptC_pyramid_blending script, Allocation allocation) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "expandBitmap");
+		long time_s = 0;
+		if( MyDebug.LOG )
+			time_s = System.currentTimeMillis();
+
+		int width = allocation.getType().getX();
+		int height = allocation.getType().getY();
+		Allocation result_allocation;
+
+		Allocation expanded_allocation = Allocation.createTyped(rs, Type.createXY(rs, Element.RGBA_8888(rs), 2*width, 2*height));
+		if( MyDebug.LOG )
+			Log.d(TAG, "### expandBitmap: time after creating expanded_allocation: " + (System.currentTimeMillis() - time_s));
+
+		script.set_bitmap(allocation);
+		script.forEach_expand(expanded_allocation, expanded_allocation);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### expandBitmap: time after expand: " + (System.currentTimeMillis() - time_s));
+
+		final boolean use_blur_2d = false; // faster to do blue as two 1D passes
+		if( use_blur_2d ) {
+			result_allocation = Allocation.createTyped(rs, Type.createXY(rs, Element.RGBA_8888(rs), 2*width, 2*height));
+			if( MyDebug.LOG )
+				Log.d(TAG, "### expandBitmap: time after creating result_allocation: " + (System.currentTimeMillis() - time_s));
+			script.set_bitmap(expanded_allocation);
+			script.forEach_blur(expanded_allocation, result_allocation);
+			if( MyDebug.LOG )
+				Log.d(TAG, "### expandBitmap: time after blur: " + (System.currentTimeMillis() - time_s));
+			expanded_allocation.destroy();
+			//result_allocation = expanded_allocation;
+		}
+		else {
+			Allocation temp_allocation = Allocation.createTyped(rs, Type.createXY(rs, Element.RGBA_8888(rs), 2*width, 2*height));
+			if( MyDebug.LOG )
+				Log.d(TAG, "### expandBitmap: time after creating temp_allocation: " + (System.currentTimeMillis() - time_s));
+			script.set_bitmap(expanded_allocation);
+			script.forEach_blur1dX(expanded_allocation, temp_allocation);
+			if( MyDebug.LOG )
+				Log.d(TAG, "### expandBitmap: time after blur1dX: " + (System.currentTimeMillis() - time_s));
+
+			// now re-use expanded_allocation for the result_allocation
+			result_allocation = expanded_allocation;
+			script.set_bitmap(temp_allocation);
+			script.forEach_blur1dY(temp_allocation, result_allocation);
+			if( MyDebug.LOG )
+				Log.d(TAG, "### expandBitmap: time after blur1dY: " + (System.currentTimeMillis() - time_s));
+
+			temp_allocation.destroy();
+		}
+
+		return result_allocation;
+	}
+
+	/** Creates an allocation where each pixel equals the pixel from allocation0 minus the corresponding
+	 *  pixel from allocation1.
+	 */
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private Allocation subtractBitmap(ScriptC_pyramid_blending script, Allocation allocation0, Allocation allocation1) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "subtractBitmap");
+		int width = allocation0.getType().getX();
+		int height = allocation0.getType().getY();
+		if( allocation1.getType().getX() != width || allocation1.getType().getY() != height ) {
+			Log.e(TAG, "allocations of different dimensions");
+			throw new RuntimeException();
+		}
+		Allocation result_allocation = Allocation.createTyped(rs, Type.createXY(rs, Element.F32_3(rs), width, height));
+		script.set_bitmap(allocation1);
+		script.forEach_subtract(allocation0, result_allocation);
+
+		return result_allocation;
+	}
+
+	/** Updates allocation0 such that each pixel equals the pixel from allocation0 plus the
+	 *  corresponding pixel from allocation1.
+	 *  allocation0 should be of type RGBA_8888, allocation1 should be of type F32_3.
+	 */
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private void addBitmap(ScriptC_pyramid_blending script, Allocation allocation0, Allocation allocation1) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "addBitmap");
+		int width = allocation0.getType().getX();
+		int height = allocation0.getType().getY();
+		if( allocation1.getType().getX() != width || allocation1.getType().getY() != height ) {
+			Log.e(TAG, "allocations of different dimensions");
+			throw new RuntimeException();
+		}
+		script.set_bitmap(allocation1);
+		script.forEach_add(allocation0, allocation0);
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private List<Allocation> createGaussianPyramid(ScriptC_pyramid_blending script, Bitmap bitmap, int n_levels) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "createGaussianPyramid");
+		List<Allocation> pyramid = new ArrayList<>();
+
+		Allocation allocation = Allocation.createFromBitmap(rs, bitmap);
+		pyramid.add(allocation);
+		for(int i=0;i<n_levels;i++ ) {
+			allocation = reduceBitmap(script, allocation);
+			pyramid.add(allocation);
+		}
+
+		return pyramid;
+	}
+
+	/** Creates a laplacian pyramid of the supplied bitmap, ordered from bottom to top. The i-th
+	 *  entry is equal to [G(i) - G'(i+1)], where G(i) is the i-th level of the gaussian pyramid,
+	 *  and G' is created by expanding a level of the gaussian pyramid; except the last entry
+	 *  is simply equal to the last (i.e., top) level of the gaussian pyramid.
+	 *  The allocations are of type floating point (F32_3), except the last which is of type
+	 *  RGBA_8888.
+	 */
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private List<Allocation> createLaplacianPyramid(ScriptC_pyramid_blending script,Bitmap bitmap, int n_levels, String name) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "createLaplacianPyramid");
+		long time_s = 0;
+		if( MyDebug.LOG )
+			time_s = System.currentTimeMillis();
+
+        List<Allocation> gaussianPyramid = createGaussianPyramid(script, bitmap, n_levels);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### createLaplacianPyramid: time after createGaussianPyramid: " + (System.currentTimeMillis() - time_s));
+		/*{
+			// debug
+			savePyramid("gaussian", gaussianPyramid);
+		}*/
+		List<Allocation> pyramid = new ArrayList<>();
+
+		for(int i=0;i<gaussianPyramid.size()-1;i++) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "createLaplacianPyramid: i = " + i);
+			Allocation this_gauss = gaussianPyramid.get(i);
+			Allocation next_gauss = gaussianPyramid.get(i+1);
+			Allocation next_gauss_expanded = expandBitmap(script, next_gauss);
+			if( MyDebug.LOG )
+				Log.d(TAG, "### createLaplacianPyramid: time after expandBitmap for level " + i + ": " + (System.currentTimeMillis() - time_s));
+			if( MyDebug.LOG ) {
+				Log.d(TAG, "this_gauss: " + this_gauss.getType().getX() + " , " + this_gauss.getType().getY());
+				Log.d(TAG, "next_gauss: " + next_gauss.getType().getX() + " , " + next_gauss.getType().getY());
+				Log.d(TAG, "next_gauss_expanded: " + next_gauss_expanded.getType().getX() + " , " + next_gauss_expanded.getType().getY());
+			}
+			/*{
+				// debug
+				saveAllocation(name + "_this_gauss_" + i + ".jpg", this_gauss);
+				saveAllocation(name + "_next_gauss_expanded_" + i + ".jpg", next_gauss_expanded);
+			}*/
+			Allocation difference = subtractBitmap(script, this_gauss, next_gauss_expanded);
+			if( MyDebug.LOG )
+				Log.d(TAG, "### createLaplacianPyramid: time after subtractBitmap for level " + i + ": " + (System.currentTimeMillis() - time_s));
+			/*{
+				// debug
+				saveAllocation(name + "_difference_" + i + ".jpg", difference);
+			}*/
+			pyramid.add(difference);
+			//pyramid.add(this_gauss);
+
+			this_gauss.destroy();
+			gaussianPyramid.set(i, null); // to help garbage collection
+			next_gauss_expanded.destroy();
+			if( MyDebug.LOG )
+				Log.d(TAG, "### createLaplacianPyramid: time after level " + i + ": " + (System.currentTimeMillis() - time_s));
+		}
+		pyramid.add(gaussianPyramid.get(gaussianPyramid.size()-1));
+
+		return pyramid;
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private Bitmap collapseLaplacianPyramid(ScriptC_pyramid_blending script, List<Allocation> pyramid) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "collapseLaplacianPyramid");
+
+		Allocation allocation = pyramid.get(pyramid.size()-1);
+		boolean first = true;
+		for(int i=pyramid.size()-2;i>=0;i--) {
+			Allocation expanded_allocation = expandBitmap(script, allocation);
+			if( !first ) {
+				allocation.destroy();
+			}
+			addBitmap(script, expanded_allocation, pyramid.get(i));
+			allocation = expanded_allocation;
+			first = false;
+		}
+
+		int width = allocation.getType().getX();
+		int height = allocation.getType().getY();
+		Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+		allocation.copyTo(bitmap);
+		if( !first ) {
+			allocation.destroy();
+		}
+		return bitmap;
+	}
+
+	/** Updates every allocation in pyramid0 so that the right hand side comes from the
+	 *  right hand side of the corresponding allocation in pyramid1.
+	 */
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private void mergePyramids(ScriptC_pyramid_blending script, List<Allocation> pyramid0, List<Allocation> pyramid1) {
+		if( MyDebug.LOG )
+			Log.d(TAG, "mergePyramids");
+		for(int i=0;i<pyramid0.size();i++) {
+			Allocation allocation0 = pyramid0.get(i);
+			Allocation allocation1 = pyramid1.get(i);
+
+			int width = allocation0.getType().getX();
+			int height = allocation0.getType().getY();
+			if( allocation1.getType().getX() != width || allocation1.getType().getY() != height ) {
+				Log.e(TAG, "allocations of different dimensions");
+				throw new RuntimeException();
+			}
+			else if( allocation0.getType().getElement().getDataType() != allocation1.getType().getElement().getDataType() ) {
+				Log.e(TAG, "allocations of different data types");
+				throw new RuntimeException();
+			}
+
+			script.set_bitmap(allocation1);
+
+			//int blend_width = (i==pyramid0.size()-1) ? width : 2;
+			int blend_width;
+			if( i==pyramid0.size()-1 ) {
+				blend_width = width;
+			}
+			else {
+				blend_width = 2;
+				for(int j=0;j<i;j++) {
+					blend_width *= 2;
+				}
+				blend_width = Math.min(blend_width, width);
+			}
+
+			script.invoke_setBlendWidth(blend_width, width);
+
+			if( allocation0.getType().getElement().getDataType() == Element.DataType.FLOAT_32 ) {
+				script.forEach_merge_f(allocation0, allocation0);
+			}
+			else {
+				script.forEach_merge(allocation0, allocation0);
+			}
+		}
+	}
+
+	/** For testing.
+	 */
+	private void saveBitmap(Bitmap bitmap, String name) {
+		try {
+			File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) + "/" + name);
+			OutputStream outputStream = new FileOutputStream(file);
+			bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream);
+			outputStream.close();
+			MainActivity mActivity = (MainActivity) context;
+			mActivity.getStorageUtils().broadcastFile(file, true, false, true);
+		}
+		catch(IOException e) {
+			e.printStackTrace();
+			throw new RuntimeException();
+		}
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private void saveAllocation(String name, Allocation allocation) {
+		Bitmap bitmap;
+		int width = allocation.getType().getX();
+		int height = allocation.getType().getY();
+		Log.d(TAG, "count: " + allocation.getType().getCount());
+		Log.d(TAG, "byte size: " + allocation.getType().getElement().getBytesSize());
+		if( allocation.getType().getElement().getDataType() == Element.DataType.FLOAT_32 ) {
+			float [] bytes = new float[width*height*4];
+			allocation.copyTo(bytes);
+			int [] pixels = new int[width*height];
+			for(int j=0;j<width*height;j++) {
+				float r = bytes[4*j];
+				float g = bytes[4*j+1];
+				float b = bytes[4*j+2];
+				// each value should be from -255 to +255, we compress to be in the range [0, 255]
+				int ir = (int)(255.0f * ((r/510.0f) + 0.5f) + 0.5f);
+				int ig = (int)(255.0f * ((g/510.0f) + 0.5f) + 0.5f);
+				int ib = (int)(255.0f * ((b/510.0f) + 0.5f) + 0.5f);
+				ir = Math.max(Math.min(ir, 255), 0);
+				ig = Math.max(Math.min(ig, 255), 0);
+				ib = Math.max(Math.min(ib, 255), 0);
+				pixels[j] = Color.argb(255, ir, ig, ib);
+			}
+			bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888);
+		}
+		else {
+			bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+			allocation.copyTo(bitmap);
+		}
+		saveBitmap(bitmap, name);
+		bitmap.recycle();
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	private void savePyramid(String name, List<Allocation> pyramid) {
+		for(int i=0;i<pyramid.size();i++) {
+			Allocation allocation = pyramid.get(i);
+			saveAllocation(name + "_" + i + ".jpg", allocation);
+		}
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+	public Bitmap blendPyramids(Bitmap lhs, Bitmap rhs) {
+		long time_s = 0;
+		if( MyDebug.LOG )
+			time_s = System.currentTimeMillis();
+		ScriptC_pyramid_blending script = new ScriptC_pyramid_blending(rs);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time after creating ScriptC_pyramid_blending: " + (System.currentTimeMillis() - time_s));
+		//final int n_levels = 5;
+		final int n_levels = 4;
+		//final int n_levels = 1;
+
+		// debug
+        /*{
+            saveBitmap(lhs, "lhs.jpg");
+            saveBitmap(rhs, "rhs.jpg");
+        }*/
+		// debug
+        /*{
+            List<Allocation> lhs_pyramid = createGaussianPyramid(script, lhs, n_levels);
+            List<Allocation> rhs_pyramid = createGaussianPyramid(script, rhs, n_levels);
+            savePyramid("lhs_gauss", lhs_pyramid);
+            savePyramid("rhs_gauss", rhs_pyramid);
+            for(Allocation allocation : lhs_pyramid) {
+                allocation.destroy();
+            }
+            for(Allocation allocation : rhs_pyramid) {
+                allocation.destroy();
+            }
+        }*/
+
+		List<Allocation> lhs_pyramid = createLaplacianPyramid(script, lhs, n_levels, "lhs");
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time after createLaplacianPyramid 1st call: " + (System.currentTimeMillis() - time_s));
+		List<Allocation> rhs_pyramid = createLaplacianPyramid(script, rhs, n_levels, "rhs");
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time after createLaplacianPyramid 2nd call: " + (System.currentTimeMillis() - time_s));
+
+		// debug
+		/*{
+			savePyramid("lhs_laplacian", lhs_pyramid);
+			savePyramid("rhs_laplacian", rhs_pyramid);
+		}*/
+
+		// debug
+		/*{
+			Bitmap lhs_collapsed = collapseLaplacianPyramid(script, lhs_pyramid);
+			saveBitmap(lhs_collapsed, "lhs_collapsed.jpg");
+			Bitmap rhs_collapsed = collapseLaplacianPyramid(script, rhs_pyramid);
+			saveBitmap(rhs_collapsed, "rhs_collapsed.jpg");
+			lhs_collapsed.recycle();
+			rhs_collapsed.recycle();
+		}*/
+
+		mergePyramids(script, lhs_pyramid, rhs_pyramid);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time after mergePyramids: " + (System.currentTimeMillis() - time_s));
+		Bitmap merged_bitmap = collapseLaplacianPyramid(script, lhs_pyramid);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time after collapseLaplacianPyramid: " + (System.currentTimeMillis() - time_s));
+		// debug
+        /*{
+            savePyramid("merged_laplacian", lhs_pyramid);
+            saveBitmap(merged_bitmap, "merged_bitmap.jpg");
+        }*/
+
+		for(Allocation allocation : lhs_pyramid) {
+			allocation.destroy();
+		}
+		for(Allocation allocation : rhs_pyramid) {
+			allocation.destroy();
+		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### blendPyramids: time taken: " + (System.currentTimeMillis() - time_s));
+		return merged_bitmap;
+	}
+
+	private static class FeatureMatch implements Comparable<FeatureMatch> {
+		private final int index0, index1;
+		private float distance; // from 0 to 1, higher means poorer match
+
+		private FeatureMatch(int index0, int index1) {
+			this.index0 = index0;
+			this.index1 = index1;
+		}
+
+		@Override
+		public int compareTo(FeatureMatch that) {
+			//return (int)(this.distance - that.distance);
+				/*if( this.distance > that.distance )
+					return 1;
+				else if( this.distance < that.distance )
+					return -1;
+				else
+					return 0;*/
+			return Float.compare(this.distance, that.distance);
+		}
+
+		@Override
+		public boolean equals(Object that) {
+			return (that instanceof FeatureMatch) && compareTo((FeatureMatch)that) == 0;
+		}
+	}
+
+	private static void computeDistancesBetweenMatches(List<FeatureMatch> matches, int st_indx, int nd_indx, int feature_descriptor_radius, List<Bitmap> bitmaps, int [] pixels0, int [] pixels1) {
+		final int wid = 2*feature_descriptor_radius+1;
+		final int wid2 = wid*wid;
+		for(int indx=st_indx;indx<nd_indx;indx++) {
+			FeatureMatch match = matches.get(indx);
+
+				/*float distance = 0;
+				for(int dy=-feature_descriptor_radius;dy<=feature_descriptor_radius;dy++) {
+					for(int dx=-feature_descriptor_radius;dx<=feature_descriptor_radius;dx++) {
+						int pixel0 = bitmaps.get(0).getPixel(point0.x + dx, point0.y + dy);
+						int pixel1 = bitmaps.get(1).getPixel(point1.x + dx, point1.y + dy);
+						//int value0 = (Color.red(pixel0) + Color.green(pixel0) + Color.blue(pixel0))/3;
+						//int value1 = (Color.red(pixel1) + Color.green(pixel1) + Color.blue(pixel1))/3;
+						int value0 = (int)(0.3*Color.red(pixel0) + 0.59*Color.green(pixel0) + 0.11*Color.blue(pixel0));
+						int value1 = (int)(0.3*Color.red(pixel1) + 0.59*Color.green(pixel1) + 0.11*Color.blue(pixel1));
+						int dist2 = value0*value0 + value1+value1;
+						distance += ((float)dist2)/65025.0f; // so distance for a given pixel is from 0 to 1
+					}
+				}
+				distance /= (float)wid2; // normalise from 0 to 1
+				match.distance = distance;*/
+
+			float fsum = 0, gsum = 0;
+			float f2sum = 0, g2sum = 0;
+			float fgsum = 0;
+
+			// much faster to read via getPixels() rather than pixel by pixel
+			//bitmaps.get(0).getPixels(pixels0, 0, wid, point0.x - feature_descriptor_radius, point0.y - feature_descriptor_radius, wid, wid);
+			//bitmaps.get(1).getPixels(pixels1, 0, wid, point1.x - feature_descriptor_radius, point1.y - feature_descriptor_radius, wid, wid);
+			//int pixel_idx = 0;
+
+			int pixel_idx0 = match.index0*wid2;
+			int pixel_idx1 = match.index1*wid2;
+
+			for(int dy=-feature_descriptor_radius;dy<=feature_descriptor_radius;dy++) {
+				for(int dx=-feature_descriptor_radius;dx<=feature_descriptor_radius;dx++) {
+					//int pixel0 = bitmaps.get(0).getPixel(point0.x + dx, point0.y + dy);
+					//int pixel1 = bitmaps.get(1).getPixel(point1.x + dx, point1.y + dy);
+
+					//int pixel0 = pixels0[pixel_idx];
+					//int pixel1 = pixels1[pixel_idx];
+					//pixel_idx++;
+
+					//int value0 = (Color.red(pixel0) + Color.green(pixel0) + Color.blue(pixel0))/3;
+					//int value1 = (Color.red(pixel1) + Color.green(pixel1) + Color.blue(pixel1))/3;
+					//int value0 = (int)(0.3*Color.red(pixel0) + 0.59*Color.green(pixel0) + 0.11*Color.blue(pixel0));
+					//int value1 = (int)(0.3*Color.red(pixel1) + 0.59*Color.green(pixel1) + 0.11*Color.blue(pixel1));
+
+					int value0 = pixels0[pixel_idx0];
+					int value1 = pixels1[pixel_idx1];
+					pixel_idx0++;
+					pixel_idx1++;
+
+					fsum += value0;
+					f2sum += value0*value0;
+					gsum += value1;
+					g2sum += value1*value1;
+					fgsum += value0*value1;
+				}
+			}
+			float fden = wid2*f2sum - fsum*fsum;
+			float f_recip = fden==0 ? 0.0f : 1/ fden;
+			float gden = wid2*g2sum - gsum*gsum;
+			float g_recip = gden==0 ? 0.0f : 1/ gden;
+			float fg_corr = wid2*fgsum-fsum*gsum;
+			//if( MyDebug.LOG ) {
+			//	Log.d(TAG, "match distance: ");
+			//	Log.d(TAG, "    fg_corr: " + fg_corr);
+			//	Log.d(TAG, "    fden: " + fden);
+			//	Log.d(TAG, "    gden: " + gden);
+			//	Log.d(TAG, "    f_recip: " + f_recip);
+			//	Log.d(TAG, "    g_recip: " + g_recip);
+			//}
+			// negate, as we want it so that lower value means better match, and normalise to 0-1
+			match.distance = 1.0f-Math.abs((fg_corr*fg_corr*f_recip*g_recip));
+		}
+	}
+
+	private static class ComputeDistancesBetweenMatchesThread extends Thread {
+		private final List<FeatureMatch> matches;
+		private final int st_indx;
+		private final int nd_indx;
+		private final int feature_descriptor_radius;
+		private final List<Bitmap> bitmaps;
+		private final int [] pixels0;
+		private final int [] pixels1;
+
+		ComputeDistancesBetweenMatchesThread(List<FeatureMatch> matches, int st_indx, int nd_indx, int feature_descriptor_radius, List<Bitmap> bitmaps, int [] pixels0, int [] pixels1) {
+			this.matches = matches;
+			this.st_indx = st_indx;
+			this.nd_indx = nd_indx;
+			this.feature_descriptor_radius = feature_descriptor_radius;
+			this.bitmaps = bitmaps;
+			this.pixels0 = pixels0;
+			this.pixels1 = pixels1;
+		}
+
+		public void run() {
+			computeDistancesBetweenMatches(matches, st_indx, nd_indx, feature_descriptor_radius, bitmaps, pixels0, pixels1);
+		}
+	}
+
+	public static class AutoAlignmentByFeatureResult {
+	    public final int offset_x;
+		public final int offset_y;
+	    public final float rotation;
+		public final float y_scale;
+
+        AutoAlignmentByFeatureResult(int offset_x, int offset_y, float rotation, float y_scale) {
             this.offset_x = offset_x;
             this.offset_y = offset_y;
             this.rotation = rotation;
+            this.y_scale = y_scale;
         }
     }
 
@@ -1638,26 +2184,35 @@ public class HDRProcessor {
 			Log.d(TAG, "width: " + width);
 			Log.d(TAG, "height: " + height);
 		}
+		long time_s = 0;
+		if( MyDebug.LOG )
+			time_s = System.currentTimeMillis();
 		if( bitmaps.size() != 2 ) {
 			Log.e(TAG, "must have 2 bitmaps");
 			throw new HDRProcessorException(HDRProcessorException.INVALID_N_IMAGES);
 		}
 
 		initRenderscript();
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after initRenderscript: " + (System.currentTimeMillis() - time_s));
 		Allocation [] allocations = new Allocation[bitmaps.size()];
 		for(int i=0;i<bitmaps.size();i++) {
 			allocations[i] = Allocation.createFromBitmap(rs, bitmaps.get(i));
 		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after creating allocations: " + (System.currentTimeMillis() - time_s));
 
 		// create RenderScript
 		/*if( createMTBScript == null ) {
 			createMTBScript = new ScriptC_create_mtb(rs);
 		}*/
 		ScriptC_feature_detector featureDetectorScript = new ScriptC_feature_detector(rs);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after create featureDetectorScript: " + (System.currentTimeMillis() - time_s));
 
 		//final int feature_descriptor_radius = 2; // radius of square used to compare features
-		//final int feature_descriptor_radius = 3; // radius of square used to compare features
-		final int feature_descriptor_radius = 5; // radius of square used to compare features
+		final int feature_descriptor_radius = 3; // radius of square used to compare features
+		//final int feature_descriptor_radius = 5; // radius of square used to compare features
 		Point [][] points_arrays = new Point[2][];
 
 		for(int i=0;i<bitmaps.size();i++) {
@@ -1789,56 +2344,95 @@ public class HDRProcessor {
 			*/
 
 			featureDetectorScript.set_bitmap(strength_allocation);
-			//final int max_corners = 500;
-			final int max_corners = 200;
+			//final int n_y_chunks = 1;
+			final int n_y_chunks = 2;
+			//final int n_y_chunks = 4;
+			//final int total_max_corners = 500;
+			final int total_max_corners = 200;
+			final int max_corners = total_max_corners/n_y_chunks;
 			final int min_corners = max_corners/2;
-			float threshold = 5000000.0f;
-			float low_threshold = 0.0f;
-			float high_threshold = -1.0f;
 			byte [] bytes = new byte[width*height];
-			for(;;) {
-				if( MyDebug.LOG )
-					Log.d(TAG, "### try threshold: " + threshold + " [ " + low_threshold + " : " + high_threshold + " ]");
-				featureDetectorScript.set_corner_threshold(threshold);
-				featureDetectorScript.forEach_local_maximum(strength_allocation, local_max_features_allocation);
 
-				// collect points
-				local_max_features_allocation.copyTo(bytes);
-				// find points
-				List<Point> points = new ArrayList<>();
-				for(int y=feature_descriptor_radius;y<height-feature_descriptor_radius;y++) {
-					for(int x=feature_descriptor_radius;x<width-feature_descriptor_radius;x++) {
-						int j = y*width + x;
-						// remember, bytes are signed!
-						if( bytes[j] != 0 ) {
-							Point point = new Point(x, y);
-							points.add(point);
+			List<Point> all_points = new ArrayList<>();
+			for(int cy=0;cy<n_y_chunks;cy++) {
+				if( MyDebug.LOG )
+					Log.d(TAG, ">>> find corners, chunk " + cy + " / " + n_y_chunks);
+				float threshold = 5000000.0f;
+				// setting a min_thresold fixes testPanorama11, also helps testPanorama1
+				// note that this needs to be at least 1250000.0f - at 625000.0f, testPanorama1
+				// still has problems and in fact ends up being worse than having no min threshold
+				final float min_threshold = 1250000.0f;
+				//final float min_threshold = 625000.0f;
+				float low_threshold = 0.0f;
+				float high_threshold = -1.0f;
+				int start_y = (cy*height)/n_y_chunks;
+				int stop_y = ((cy+1)*height)/n_y_chunks;
+				if( MyDebug.LOG ) {
+					Log.d(TAG, "    start_y: " + start_y);
+					Log.d(TAG, "    stop_y: " + stop_y);
+				}
+				for(int count=0;;count++) {
+					if( MyDebug.LOG )
+						Log.d(TAG, "### attempt " + count + " try threshold: " + threshold + " [ " + low_threshold + " : " + high_threshold + " ]");
+					featureDetectorScript.set_corner_threshold(threshold);
+					Script.LaunchOptions launch_options = new Script.LaunchOptions();
+					launch_options.setX(0, width);
+					launch_options.setY(start_y, stop_y);
+					featureDetectorScript.forEach_local_maximum(strength_allocation, local_max_features_allocation, launch_options);
+
+					// collect points
+					local_max_features_allocation.copyTo(bytes);
+					// find points
+					List<Point> points = new ArrayList<>();
+					for(int y=Math.max(start_y, feature_descriptor_radius);y<Math.min(stop_y, height-feature_descriptor_radius);y++) {
+						for(int x=feature_descriptor_radius;x<width-feature_descriptor_radius;x++) {
+							int j = y*width + x;
+							// remember, bytes are signed!
+							if( bytes[j] != 0 ) {
+								Point point = new Point(x, y);
+								points.add(point);
+							}
 						}
 					}
-				}
-				if( MyDebug.LOG )
-					Log.d(TAG, "    " + points.size() + " points");
-				if( points.size() >= min_corners && points.size() <= max_corners ) {
-					points_arrays[i] = points.toArray(new Point[0]);
-					break;
-				}
-				else if( points.size() < min_corners ) {
-					high_threshold = threshold;
-					threshold = 0.5f * ( low_threshold + threshold );
 					if( MyDebug.LOG )
-						Log.d(TAG, "    reduced threshold to: " + threshold);
-				}
-				else {
-					low_threshold = threshold;
-					if( high_threshold < 0.0f ) {
-						threshold *= 10.0f;
+						Log.d(TAG, "    " + points.size() + " points");
+					if( points.size() >= min_corners && points.size() <= max_corners ) {
+						all_points.addAll(points);
+						break;
 					}
-					else
-						threshold = 0.5f * ( threshold + high_threshold );
-					if( MyDebug.LOG )
-						Log.d(TAG, "    increased threshold to: " + threshold);
+					else if( points.size() < min_corners ) {
+						if( threshold <= min_threshold ) {
+							if( MyDebug.LOG )
+								Log.d(TAG, "    hit minimum threshold: " + threshold);
+							all_points.addAll(points);
+							break;
+						}
+						else {
+							high_threshold = threshold;
+							threshold = 0.5f * ( low_threshold + threshold );
+							if( MyDebug.LOG )
+								Log.d(TAG, "    reduced threshold to: " + threshold);
+							/*if( low_threshold == 0.0f ) {
+								throw new RuntimeException();
+							}*/
+							/*if( count == 0 ) {
+								throw new RuntimeException();
+							}*/
+						}
+					}
+					else {
+						low_threshold = threshold;
+						if( high_threshold < 0.0f ) {
+							threshold *= 10.0f;
+						}
+						else
+							threshold = 0.5f * ( threshold + high_threshold );
+						if( MyDebug.LOG )
+							Log.d(TAG, "    increased threshold to: " + threshold);
+					}
 				}
 			}
+			points_arrays[i] = all_points.toArray(new Point[0]);
 
 			if( MyDebug.LOG )
 				Log.d(TAG, "### image: " + i + " has " + points_arrays[i].length + " points");
@@ -1849,26 +2443,26 @@ public class HDRProcessor {
 			local_max_features_allocation.destroy();
 			local_max_features_allocation = null;
 		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after feature detection: " + (System.currentTimeMillis() - time_s));
 
-		class FeatureMatch implements Comparable<FeatureMatch> {
-			private int index0, index1;
-			private float distance; // from 0 to 1, higher means poorer match
+		// if we have too few good corners, risk of getting a poor match
+		final int min_required_corners = 10;
+		if( points_arrays[0].length < min_required_corners || points_arrays[1].length < min_required_corners ) {
+			if( MyDebug.LOG )
+				Log.d(TAG, "too few points!");
+			/*if( true )
+				throw new RuntimeException();*/
 
-			private FeatureMatch(int index0, int index1) {
-				this.index0 = index0;
-				this.index1 = index1;
+			// free allocations
+			for(int i=0;i<allocations.length;i++) {
+				if( allocations[i] != null ) {
+					allocations[i].destroy();
+					allocations[i] = null;
+				}
 			}
-
-			@Override
-			public int compareTo(FeatureMatch that) {
-				//return (int)(this.distance - that.distance);
-				if( this.distance > that.distance )
-					return 1;
-				else if( this.distance < that.distance )
-					return -1;
-				else
-					return 0;
-			}
+			freeScripts();
+			return new AutoAlignmentByFeatureResult(0, 0, 0.0f, 1.0f);
 		}
 
 		// generate candidate matches
@@ -1900,67 +2494,89 @@ public class HDRProcessor {
 		}
 		if( MyDebug.LOG )
 			Log.d(TAG, "### possible matches: " + matches.size());
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after finding possible matches: " + (System.currentTimeMillis() - time_s));
 
 		// compute distances between matches
-		for(FeatureMatch match : matches) {
-			Point point0 = points_arrays[0][match.index0];
-			Point point1 = points_arrays[1][match.index1];
+		{
 			final int wid = 2*feature_descriptor_radius+1;
 			final int wid2 = wid*wid;
-
-			/*float distance = 0;
-			for(int dy=-feature_descriptor_radius;dy<=feature_descriptor_radius;dy++) {
-				for(int dx=-feature_descriptor_radius;dx<=feature_descriptor_radius;dx++) {
-					int pixel0 = bitmaps.get(0).getPixel(point0.x + dx, point0.y + dy);
-					int pixel1 = bitmaps.get(1).getPixel(point1.x + dx, point1.y + dy);
-					//int value0 = (Color.red(pixel0) + Color.green(pixel0) + Color.blue(pixel0))/3;
-					//int value1 = (Color.red(pixel1) + Color.green(pixel1) + Color.blue(pixel1))/3;
-					int value0 = (int)(0.3*Color.red(pixel0) + 0.59*Color.green(pixel0) + 0.11*Color.blue(pixel0));
-					int value1 = (int)(0.3*Color.red(pixel1) + 0.59*Color.green(pixel1) + 0.11*Color.blue(pixel1));
-					int dist2 = value0*value0 + value1+value1;
-					distance += ((float)dist2)/65025.0f; // so distance for a given pixel is from 0 to 1
-				}
+			int [] pixels0 = new int[points_arrays[0].length*wid2];
+			int [] pixels1 = new int[points_arrays[1].length*wid2];
+			for(int i=0;i<points_arrays[0].length;i++) {
+				int x = points_arrays[0][i].x;
+				int y = points_arrays[0][i].y;
+				bitmaps.get(0).getPixels(pixels0, i*wid2, wid, x - feature_descriptor_radius, y - feature_descriptor_radius, wid, wid);
 			}
-			distance /= (float)wid2; // normalise from 0 to 1
-			match.distance = distance;*/
-
-			float fsum = 0, gsum = 0;
-			float f2sum = 0, g2sum = 0;
-			float fgsum = 0;
-			for(int dy=-feature_descriptor_radius;dy<=feature_descriptor_radius;dy++) {
-				for(int dx=-feature_descriptor_radius;dx<=feature_descriptor_radius;dx++) {
-					int pixel0 = bitmaps.get(0).getPixel(point0.x + dx, point0.y + dy);
-					int pixel1 = bitmaps.get(1).getPixel(point1.x + dx, point1.y + dy);
-					//int value0 = (Color.red(pixel0) + Color.green(pixel0) + Color.blue(pixel0))/3;
-					//int value1 = (Color.red(pixel1) + Color.green(pixel1) + Color.blue(pixel1))/3;
-					int value0 = (int)(0.3*Color.red(pixel0) + 0.59*Color.green(pixel0) + 0.11*Color.blue(pixel0));
-					int value1 = (int)(0.3*Color.red(pixel1) + 0.59*Color.green(pixel1) + 0.11*Color.blue(pixel1));
-					fsum += value0;
-					f2sum += value0*value0;
-					gsum += value1;
-					g2sum += value1*value1;
-					fgsum += value0*value1;
-				}
+			for(int i=0;i<points_arrays[1].length;i++) {
+				int x = points_arrays[1][i].x;
+				int y = points_arrays[1][i].y;
+				bitmaps.get(1).getPixels(pixels1, i*wid2, wid, x - feature_descriptor_radius, y - feature_descriptor_radius, wid, wid);
 			}
-			float fden = wid2*f2sum - fsum*fsum;
-			float f_recip = fden==0 ? 0.0f : 1/(float)fden;
-			float gden = wid2*g2sum - gsum*gsum;
-			float g_recip = gden==0 ? 0.0f : 1/(float)gden;
-			float fg_corr = wid2*fgsum-fsum*gsum;
-			//if( MyDebug.LOG ) {
-			//	Log.d(TAG, "match distance: ");
-			//	Log.d(TAG, "    fg_corr: " + fg_corr);
-			//	Log.d(TAG, "    fden: " + fden);
-			//	Log.d(TAG, "    gden: " + gden);
-			//	Log.d(TAG, "    f_recip: " + f_recip);
-			//	Log.d(TAG, "    g_recip: " + g_recip);
-			//}
-			// negate, as we want it so that lower value means better match, and normalise to 0-1
-			match.distance = 1.0f-Math.abs((fg_corr*fg_corr*f_recip*g_recip));
+			// convert to greyscale
+			for(int i=0;i<pixels0.length;i++) {
+				int pixel = pixels0[i];
+				pixels0[i] = (int)(0.3*Color.red(pixel) + 0.59*Color.green(pixel) + 0.11*Color.blue(pixel));
+			}
+			for(int i=0;i<pixels1.length;i++) {
+				int pixel = pixels1[i];
+				pixels1[i] = (int)(0.3*Color.red(pixel) + 0.59*Color.green(pixel) + 0.11*Color.blue(pixel));
+			}
+
+			final boolean use_smp = true;
+			if( use_smp ) {
+				// testing shows 2 threads gives slightly better than using more threads, or not using smp
+				//int n_threads = Math.min(matches.size(), Runtime.getRuntime().availableProcessors());
+				int n_threads = Math.min(matches.size(), 2);
+				if( MyDebug.LOG )
+					Log.d(TAG, "n_threads: " + n_threads);
+				ComputeDistancesBetweenMatchesThread [] threads = new ComputeDistancesBetweenMatchesThread[n_threads];
+				int st_indx = 0;
+				for(int i=0;i<n_threads;i++) {
+					int nd_indx = (((i+1)*matches.size())/n_threads);
+					if( MyDebug.LOG )
+						Log.d(TAG, "thread " + i + " from " + st_indx + " to " + nd_indx);
+					threads[i] = new ComputeDistancesBetweenMatchesThread(matches, st_indx, nd_indx, feature_descriptor_radius, bitmaps, pixels0, pixels1);
+					st_indx = nd_indx;
+				}
+				// start threads
+				if( MyDebug.LOG )
+					Log.d(TAG, "start threads");
+				for(int i=0;i<n_threads;i++) {
+					threads[i].start();
+				}
+				// wait for threads to complete
+				if( MyDebug.LOG )
+					Log.d(TAG, "wait for threads to complete");
+				try {
+					for(int i=0;i<n_threads;i++) {
+						threads[i].join();
+					}
+				}
+				catch(InterruptedException e) {
+					Log.e(TAG, "ComputeDistancesBetweenMatchesThread threads interrupted");
+					e.printStackTrace();
+					Thread.currentThread().interrupt();
+				}
+				if( MyDebug.LOG )
+					Log.d(TAG, "threads completed");
+			}
+			else {
+				int st_indx = 0, nd_indx = matches.size();
+				/*final int wid = 2*feature_descriptor_radius+1;
+				final int wid2 = wid*wid;
+				int [] pixels0 = new int[wid2];
+				int [] pixels1 = new int[wid2];*/
+				computeDistancesBetweenMatches(matches, st_indx, nd_indx, feature_descriptor_radius, bitmaps, pixels0, pixels1);
+			}
 		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after computing match distances: " + (System.currentTimeMillis() - time_s));
 
 		// sort
 		Collections.sort(matches);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after sorting matches: " + (System.currentTimeMillis() - time_s));
 		if( MyDebug.LOG ) {
 			FeatureMatch best_match = matches.get(0);
 			FeatureMatch worst_match = matches.get(matches.size()-1);
@@ -1973,20 +2589,40 @@ public class HDRProcessor {
 		boolean [] has_matched1 = new boolean[points_arrays[1].length];
 		List<FeatureMatch> actual_matches = new ArrayList<>();
 		//final int n_matches = (int)(matches.size()*0.25f)+1;
-		for(FeatureMatch match : matches) {
+        //for(FeatureMatch match : matches) {
+        for(int i=0;i<matches.size();i++){
+            FeatureMatch match = matches.get(i);
 			if( has_matched0[match.index0] || has_matched1[match.index1] ) {
 				continue;
 			}
 			if( MyDebug.LOG ) {
 				Log.d(TAG, "    match between " + match.index0 + " and " + match.index1 + " distance: " + match.distance);
 			}
-			/*if( match.distance > 0.3f ) {
-				// test only relevant for some kind of matches
-				if( MyDebug.LOG ) {
-					Log.d(TAG, "match not good enough");
-				}
-				break;
+
+			// Lowe's test
+			/*boolean found = false;
+			boolean reject = false;
+            for(int j=i+1;j<matches.size() && !found;j++) {
+                FeatureMatch match2 = matches.get(j);
+                if( match.index0 == match2.index0 ) {
+                	found = true;
+                    float ratio = match.distance / match2.distance;
+                    if( MyDebug.LOG ) {
+                        Log.d(TAG, "        next best match is with " + match2.index0 + " distance: " + match.distance + " , ratio: " + ratio);
+                    }
+					if( ratio+1.0e-5 > 0.8f ) {
+                        if( MyDebug.LOG ) {
+                            Log.d(TAG, "        reject due to Lowe's test, ratio: " + ratio);
+                        }
+                        reject = true;
+                    }
+                }
+            }
+            if( reject ) {
+				has_matched0[match.index0] = true;
+				continue;
 			}*/
+
 			actual_matches.add(match);
 			has_matched0[match.index0] = true;
 			has_matched1[match.index1] = true;
@@ -1996,10 +2632,14 @@ public class HDRProcessor {
 			}*/
 		}
 		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after initial matching: " + (System.currentTimeMillis() - time_s));
+		if( MyDebug.LOG )
 			Log.d(TAG, "### found: " + actual_matches.size() + " matches");
+		Log.d(TAG, "### autoAlignmentByFeature: time after finding possible matches: " + (System.currentTimeMillis() - time_s));
 
-		// but now choose only top actual matches
-        /*int n_matches = (int)(actual_matches.size()*0.1)+1;
+		// but now choose only best actual matches
+		//int n_matches = (int)(actual_matches.size()*0.1)+1;
+		int n_matches = (int)(actual_matches.size()*0.7)+1;
 		actual_matches.subList(n_matches,actual_matches.size()).clear();
         if( MyDebug.LOG )
             Log.d(TAG, "### resized to: " + actual_matches.size() + " actual matches");
@@ -2011,113 +2651,45 @@ public class HDRProcessor {
             has_matched1[match.index1] = true;
             if( MyDebug.LOG )
 				Log.d(TAG, "    actual match between " + match.index0 + " and " + match.index1 + " distance: " + match.distance);
-		}*/
+		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after choosing best matches: " + (System.currentTimeMillis() - time_s));
 
 		final boolean use_ransac = true;
 		//final boolean use_ransac = false;
 		//final boolean estimate_rotation = false;
 		final boolean estimate_rotation = true;
+		final boolean estimate_y_scale = false;
+		//final boolean estimate_y_scale = true;
+		//final boolean estimate_rotation = debug_index < 3;
+		boolean use_rotation = false;
+		boolean use_y_scale = false;
+		final float max_y_scale = 1.05f + 1.0e-5f;
+
+		final float min_rotation_dist = Math.max(5.0f, Math.max(width, height)/32.0f);
+		if( MyDebug.LOG )
+			Log.d(TAG, "min_rotation_dist: " + min_rotation_dist);
+		//final float min_rotation_dist2 = 1.0e-5f;
+		final float min_rotation_dist2 = min_rotation_dist*min_rotation_dist;
+
         if( use_ransac ) {
 			// RANSAC
 			List<FeatureMatch> best_inliers = new ArrayList<>();
 			List<FeatureMatch> inliers = new ArrayList<>();
 			//final float max_inlier_dist = 2.01f;
-			final float max_inlier_dist = 5.01f;
-			//final float max_inlier_dist = Math.max(5.0f, Math.max(width, height)/128.0f);
+			//final float max_inlier_dist = 5.01f;
+			//final float max_inlier_dist = 10.01f;
+			//final float max_inlier_dist = 20.01f;
+			//final float max_inlier_dist = Math.max(10.01f, Math.max(width, height)/100.0f);
+			final float max_inlier_dist = Math.max(5.01f, Math.max(width, height)/100.0f);
+			//final float max_inlier_dist = Math.max(2.51f, Math.max(width, height)/200.0f);
 			if( MyDebug.LOG )
 				Log.d(TAG, "max_inlier_dist: " + max_inlier_dist);
 			final float max_inlier_dist2 = max_inlier_dist*max_inlier_dist;
 			for(int i=0;i<actual_matches.size();i++) {
 				FeatureMatch match = actual_matches.get(i);
 
-				if( estimate_rotation ) {
-					// compute exact rotation and translation
-					// we need two points, so compare to every other point
-					if( i == 0 )
-						continue;
-					for(int j=0;j<i;j++) {
-						FeatureMatch match2 = actual_matches.get(j);
-						int c0_x = (points_arrays[0][match.index0].x + points_arrays[0][match2.index0].x)/2;
-						int c0_y = (points_arrays[0][match.index0].y + points_arrays[0][match2.index0].y)/2;
-						int c1_x = (points_arrays[1][match.index1].x + points_arrays[1][match2.index1].x)/2;
-						int c1_y = (points_arrays[1][match.index1].y + points_arrays[1][match2.index1].y)/2;
-						// model is a rotation about c0, followed by translation
-						float dx0 = (points_arrays[0][match.index0].x - points_arrays[0][match2.index0].x);
-						float dy0 = (points_arrays[0][match.index0].y - points_arrays[0][match2.index0].y);
-						float dx1 = (points_arrays[1][match.index1].x - points_arrays[1][match2.index1].x);
-						float dy1 = (points_arrays[1][match.index1].y - points_arrays[1][match2.index1].y);
-						float mag_sq0 = dx0*dx0 + dy0*dy0;
-						float mag_sq1 = dx1*dx1 + dy1*dy1;
-						if( mag_sq0 < 1.0e-5 || mag_sq1 < 1.0e-5 ) {
-							continue;
-						}
-						float angle = (float)(Math.atan2(dy1, dx1) - Math.atan2(dy0, dx0));
-						if( angle < -Math.PI )
-							angle += 2.0f*Math.PI;
-						else if( angle > Math.PI )
-							angle -= 2.0f*Math.PI;
-						/*if( MyDebug.LOG ) {
-							Log.d(TAG, "ransac: " + i + " , " + j + ": ");
-							Log.d(TAG, "    match 0: " + points_arrays[0][match.index0].x + " , " + points_arrays[0][match.index0].y);
-							Log.d(TAG, "    match 1: " + points_arrays[1][match.index1].x + " , " + points_arrays[1][match.index1].y);
-							Log.d(TAG, "    match2 0: " + points_arrays[0][match2.index0].x + " , " + points_arrays[0][match2.index0].y);
-							Log.d(TAG, "    match2 1: " + points_arrays[1][match2.index1].x + " , " + points_arrays[1][match2.index1].y);
-							Log.d(TAG, "    angle: " + angle);
-							Log.d(TAG, "    mag0: " + Math.sqrt(mag_sq0));
-							Log.d(TAG, "    mag1: " + Math.sqrt(mag_sq1));
-						}*/
-
-						// find the inliers from this
-						inliers.clear();
-						for(FeatureMatch other_match : actual_matches) {
-							int x0 = points_arrays[0][other_match.index0].x;
-							int y0 = points_arrays[0][other_match.index0].y;
-							int x1 = points_arrays[1][other_match.index1].x;
-							int y1 = points_arrays[1][other_match.index1].y;
-							x0 -= c0_x;
-							y0 -= c0_y;
-							int transformed_x0 = (int)(x0 * Math.cos(angle) - y0 * Math.sin(angle));
-							int transformed_y0 = (int)(x0 * Math.sin(angle) + y0 * Math.cos(angle));
-							transformed_x0 += c1_x;
-							transformed_y0 += c1_y;
-
-							float dx = transformed_x0 - x1;
-							float dy = transformed_y0 - y1;
-							/*if( MyDebug.LOG ) {
-								if( other_match == match )
-									Log.d(TAG, "    ransac on match: " + i + " , " + j + " : " + dx + " , " + dy);
-								else if( other_match == match2 )
-									Log.d(TAG, "    ransac on match2: " + i + " , " + j + " : " + dx + " , " + dy);
-							}*/
-							float error2 = dx*dx + dy*dy;
-							if( error2 + 1.0e-5 <= max_inlier_dist2 ) {
-								inliers.add(other_match);
-							}
-						}
-
-						if( inliers.size() > best_inliers.size() ) {
-							// found an improved model!
-							if( MyDebug.LOG )
-								Log.d(TAG, "match " + i + " gives better model: " + inliers.size() + " inliers vs " + best_inliers.size());
-							best_inliers.clear();
-							best_inliers.addAll(inliers);
-							if( best_inliers.size() == actual_matches.size() ) {
-								if( MyDebug.LOG )
-									Log.d(TAG, "all matches are inliers");
-								// no point trying any further
-								break;
-							}
-						}
-					}
-
-					if( best_inliers.size() == actual_matches.size() ) {
-						if( MyDebug.LOG )
-							Log.d(TAG, "all matches are inliers");
-						// no point trying any further
-						break;
-					}
-				}
-				else {
+				{
 					// compute exact translation from the i-th match only
 					int candidate_offset_x = points_arrays[1][match.index1].x - points_arrays[0][match.index0].x;
 					int candidate_offset_y = points_arrays[1][match.index1].y - points_arrays[0][match.index0].y;
@@ -2140,9 +2712,11 @@ public class HDRProcessor {
 					if( inliers.size() > best_inliers.size() ) {
 						// found an improved model!
 						if( MyDebug.LOG )
-							Log.d(TAG, "match " + i + " gives better model: " + inliers.size() + " inliers vs " + best_inliers.size());
+							Log.d(TAG, "match " + i + " gives better translation model: " + inliers.size() + " inliers vs " + best_inliers.size());
 						best_inliers.clear();
 						best_inliers.addAll(inliers);
+						use_rotation = false;
+						use_y_scale = false;
 						if( best_inliers.size() == actual_matches.size() ) {
 							if( MyDebug.LOG )
 								Log.d(TAG, "all matches are inliers");
@@ -2151,8 +2725,141 @@ public class HDRProcessor {
 						}
 					}
 				}
+
+				if( estimate_rotation ) {
+					// compute exact rotation and translation
+					// we need two points, so compare to every other point
+					for(int j=0;j<i;j++) {
+						FeatureMatch match2 = actual_matches.get(j);
+						int c0_x = (points_arrays[0][match.index0].x + points_arrays[0][match2.index0].x)/2;
+						int c0_y = (points_arrays[0][match.index0].y + points_arrays[0][match2.index0].y)/2;
+						int c1_x = (points_arrays[1][match.index1].x + points_arrays[1][match2.index1].x)/2;
+						int c1_y = (points_arrays[1][match.index1].y + points_arrays[1][match2.index1].y)/2;
+						// model is a (scale about c0, followed by) rotation about c0, followed by translation
+						float dx0 = (points_arrays[0][match.index0].x - points_arrays[0][match2.index0].x);
+						float dy0 = (points_arrays[0][match.index0].y - points_arrays[0][match2.index0].y);
+						float dx1 = (points_arrays[1][match.index1].x - points_arrays[1][match2.index1].x);
+						float dy1 = (points_arrays[1][match.index1].y - points_arrays[1][match2.index1].y);
+						float mag_sq0 = dx0*dx0 + dy0*dy0;
+						float mag_sq1 = dx1*dx1 + dy1*dy1;
+						if( mag_sq0 < min_rotation_dist2 || mag_sq1 < min_rotation_dist2 ) {
+							continue;
+						}
+
+						/*float y_scale = 1.0f;
+						boolean found_y_scale = false;
+						if( estimate_y_scale && Math.abs(dy0) > min_rotation_dist && Math.abs(dy1) > min_rotation_dist ) {
+							y_scale = dy1 / dy0;
+							if( y_scale <= max_y_scale && y_scale >= 1.0f/max_y_scale ) {
+								found_y_scale = true;
+							}
+							else {
+								y_scale = 1.0f;
+							}
+							dy0 *= y_scale;
+						}*/
+
+						float angle = (float)(Math.atan2(dy1, dx1) - Math.atan2(dy0, dx0));
+						if( angle < -Math.PI )
+							angle += 2.0f*Math.PI;
+						else if( angle > Math.PI )
+							angle -= 2.0f*Math.PI;
+						if( Math.abs(angle) > 30.0f*Math.PI/180.0f ) {
+							// reject too large angles
+							continue;
+						}
+						/*if( MyDebug.LOG ) {
+							Log.d(TAG, "ransac: " + i + " , " + j + ": ");
+							Log.d(TAG, "    match 0: " + points_arrays[0][match.index0].x + " , " + points_arrays[0][match.index0].y);
+							Log.d(TAG, "    match 1: " + points_arrays[1][match.index1].x + " , " + points_arrays[1][match.index1].y);
+							Log.d(TAG, "    match2 0: " + points_arrays[0][match2.index0].x + " , " + points_arrays[0][match2.index0].y);
+							Log.d(TAG, "    match2 1: " + points_arrays[1][match2.index1].x + " , " + points_arrays[1][match2.index1].y);
+							Log.d(TAG, "    y_scale: " + y_scale);
+							Log.d(TAG, "    angle: " + angle);
+							Log.d(TAG, "    mag0: " + Math.sqrt(mag_sq0));
+							Log.d(TAG, "    mag1: " + Math.sqrt(mag_sq1));
+						}*/
+
+						float y_scale = 1.0f;
+						boolean found_y_scale = false;
+						if( estimate_y_scale ) {
+							//int transformed_dx0 = (int)(dx0 * Math.cos(angle) - dy0 * Math.sin(angle));
+							int transformed_dy0 = (int)(dx0 * Math.sin(angle) + dy0 * Math.cos(angle));
+							if( Math.abs(transformed_dy0) > min_rotation_dist && Math.abs(dy1) > min_rotation_dist ) {
+								y_scale = dy1 / transformed_dy0;
+								if( y_scale <= max_y_scale && y_scale >= 1.0f/max_y_scale ) {
+									found_y_scale = true;
+								}
+								else {
+									y_scale = 1.0f;
+								}
+							}
+						}
+
+						// find the inliers from this
+						inliers.clear();
+						for(FeatureMatch other_match : actual_matches) {
+							int x0 = points_arrays[0][other_match.index0].x;
+							int y0 = points_arrays[0][other_match.index0].y;
+							int x1 = points_arrays[1][other_match.index1].x;
+							int y1 = points_arrays[1][other_match.index1].y;
+							x0 -= c0_x;
+							y0 -= c0_y;
+							//y0 *= y_scale;
+							int transformed_x0 = (int)(x0 * Math.cos(angle) - y0 * Math.sin(angle));
+							int transformed_y0 = (int)(x0 * Math.sin(angle) + y0 * Math.cos(angle));
+							transformed_y0 *= y_scale;
+							transformed_x0 += c1_x;
+							transformed_y0 += c1_y;
+
+							float dx = transformed_x0 - x1;
+							float dy = transformed_y0 - y1;
+							/*if( MyDebug.LOG ) {
+								if( other_match == match )
+									Log.d(TAG, "    ransac on match: " + i + " , " + j + " : " + dx + " , " + dy);
+								else if( other_match == match2 )
+									Log.d(TAG, "    ransac on match2: " + i + " , " + j + " : " + dx + " , " + dy);
+							}*/
+							float error2 = dx*dx + dy*dy;
+							if( error2 + 1.0e-5 <= max_inlier_dist2 ) {
+								inliers.add(other_match);
+							}
+						}
+
+						if( inliers.size() > best_inliers.size() && inliers.size() >= 5 ) {
+							// found an improved model!
+							if( MyDebug.LOG ) {
+								Log.d(TAG, "match " + i + " gives better rotation model: " + inliers.size() + " inliers vs " + best_inliers.size());
+								Log.d(TAG, "    dx0: " + dx0 + " , dy0: " + dy0);
+								Log.d(TAG, "    dx1: " + dx1 + " , dy1: " + dy1);
+								Log.d(TAG, "    rotate by " + angle + " about: " + c0_x + " , " + c0_y);
+								Log.d(TAG, "    y scale by " + y_scale);
+								Log.d(TAG, "    translate by: " + (c1_x-c0_x) + " , " + (c1_y-c0_y));
+							}
+							best_inliers.clear();
+							best_inliers.addAll(inliers);
+							use_rotation = true;
+							use_y_scale = found_y_scale;
+							if( best_inliers.size() == actual_matches.size() ) {
+								if( MyDebug.LOG )
+									Log.d(TAG, "all matches are inliers");
+								// no point trying any further
+								break;
+							}
+						}
+					}
+
+					if( best_inliers.size() == actual_matches.size() ) {
+						if( MyDebug.LOG )
+							Log.d(TAG, "all matches are inliers");
+						// no point trying any further
+						break;
+					}
+				}
 			}
 			actual_matches = best_inliers;
+			if( MyDebug.LOG )
+				Log.d(TAG, "### autoAlignmentByFeature: time after RANSAC: " + (System.currentTimeMillis() - time_s));
 			if( MyDebug.LOG ) {
 				for(FeatureMatch match : actual_matches) {
 					Log.d(TAG, "    after ransac: actual match between " + match.index0 + " and " + match.index1 + " distance: " + match.distance);
@@ -2182,9 +2889,31 @@ public class HDRProcessor {
 		int offset_x = centres[1].x - centres[0].x;
 		int offset_y = centres[1].y - centres[0].y;
 		float rotation = 0.0f;
+		float y_scale = 1.0f;
 
-		if( estimate_rotation ) {
-			// first compute an ideal rotation for a transformation where we rotate about centres[0], and then translate
+		if( estimate_rotation && use_rotation ) {
+
+			// first compute an ideal y_scale
+			/*if( estimate_y_scale && use_y_scale ) {
+				float y_scale_sum = 0.0f;
+				int n_y_scale = 0;
+				for(FeatureMatch match : actual_matches) {
+					float d0_y = points_arrays[0][match.index0].y - centres[0].y;
+					float d1_y = points_arrays[1][match.index1].y - centres[1].y;
+					if( Math.abs(d0_y) > min_rotation_dist && Math.abs(d1_y) > min_rotation_dist ) {
+						float this_y_scale = d1_y / d0_y;
+						y_scale_sum += this_y_scale;
+						n_y_scale++;
+						if( MyDebug.LOG )
+							Log.d(TAG, "    match has scale: " + this_y_scale);
+					}
+				}
+				if( n_y_scale > 0 ) {
+					y_scale = y_scale_sum / n_y_scale;
+				}
+			}*/
+
+			// compute an ideal rotation for a transformation where we rotate about centres[0], and then translate
 			float angle_sum = 0.0f;
 			int n_angles = 0;
 			for(FeatureMatch match : actual_matches) {
@@ -2197,6 +2926,9 @@ public class HDRProcessor {
 				if( mag_sq0 < 1.0e-5 || mag_sq1 < 1.0e-5 ) {
 					continue;
 				}
+
+				//dy0 *= y_scale;
+
 				float angle = (float)(Math.atan2(dy1, dx1) - Math.atan2(dy0, dx0));
 				if( angle < -Math.PI )
 					angle += 2.0f*Math.PI;
@@ -2217,10 +2949,38 @@ public class HDRProcessor {
 			//offset_x = 0; // test
 			//offset_y = 0; // test
 
-			// but instead we want to rotate about the origin and then translate:
+			if( estimate_y_scale && use_y_scale ) {
+				float y_scale_sum = 0.0f;
+				int n_y_scale = 0;
+				for(FeatureMatch match : actual_matches) {
+					float dx0 = (points_arrays[0][match.index0].x - centres[0].x);
+					float dy0 = (points_arrays[0][match.index0].y - centres[0].y);
+					//float dx1 = (points_arrays[1][match.index1].x - centres[1].x);
+					float dy1 = (points_arrays[1][match.index1].y - centres[1].y);
+					int transformed_dy0 = (int)(dx0 * Math.sin(rotation) + dy0 * Math.cos(rotation));
+					if( Math.abs(transformed_dy0) > min_rotation_dist && Math.abs(dy1) > min_rotation_dist ) {
+						float this_y_scale = dy1 / transformed_dy0;
+						y_scale_sum += this_y_scale;
+						n_y_scale++;
+						if( MyDebug.LOG )
+							Log.d(TAG, "    match has scale: " + this_y_scale);
+					}
+				}
+				if( n_y_scale > 0 ) {
+					y_scale = y_scale_sum / n_y_scale;
+				}
+			}
+
+			// but instead we want to (scale and) rotate about the origin and then translate:
 			// R[x-c] + c + d = R[x] + (d + c - R[c])
+			// Or with scale:
+			// // RS[x-c] + c + d = RS[x] + (d + c - RS[c])
+			//float rotated_centre_x = (float)(centres[0].x * Math.cos(rotation) - y_scale * centres[0].y * Math.sin(rotation));
+			//float rotated_centre_y = (float)(centres[0].x * Math.sin(rotation) + y_scale * centres[0].y * Math.cos(rotation));
+			// SR[x-c] + c + d = SR[x] + (d + c - SR[c])
 			float rotated_centre_x = (float)(centres[0].x * Math.cos(rotation) - centres[0].y * Math.sin(rotation));
 			float rotated_centre_y = (float)(centres[0].x * Math.sin(rotation) + centres[0].y * Math.cos(rotation));
+			rotated_centre_y *= y_scale;
 			if( MyDebug.LOG ) {
 				Log.d(TAG, "offset_x before rotation: " + offset_x);
 				Log.d(TAG, "offset_y before rotation: " + offset_y);
@@ -2230,13 +2990,20 @@ public class HDRProcessor {
 			offset_y += centres[0].y - rotated_centre_y;
 
 		}
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: time after computing transformation: " + (System.currentTimeMillis() - time_s));
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "offset_x: " + offset_x);
 			Log.d(TAG, "offset_y: " + offset_y);
 			Log.d(TAG, "rotation: " + rotation);
+			Log.d(TAG, "y_scale: " + y_scale);
 		}
+		/*if( Math.abs(rotation) > 30.0f*Math.PI/180.0f ) {
+			// test
+			throw new RuntimeException();
+		}*/
 
-		if( MyDebug.LOG ) {
+		if( false && MyDebug.LOG ) {
 			// debug:
 			Bitmap bitmap = Bitmap.createBitmap(2*width, height, Bitmap.Config.ARGB_8888);
 			Paint p = new Paint();
@@ -2279,6 +3046,19 @@ public class HDRProcessor {
 				p.setColor(Color.MAGENTA);
 				p.setAlpha((int)(255.0f * (1.0f-match.distance)));
 				canvas.drawLine(x0, y0, width + x1, y1, p);
+
+				// also draw where the match is actually translated to
+				//int t_cx = (int)(x0 * Math.cos(rotation) - y_scale * y0 * Math.sin(rotation));
+				//int t_cy = (int)(x0 * Math.sin(rotation) + y_scale * y0 * Math.cos(rotation));
+				int t_cx = (int)(x0 * Math.cos(rotation) - y0 * Math.sin(rotation));
+				int t_cy = (int)(x0 * Math.sin(rotation) + y0 * Math.cos(rotation));
+				t_cy *= y_scale;
+				t_cx += offset_x;
+				t_cy += offset_y;
+				// draw on right hand side
+				t_cx += width;
+				p.setColor(Color.GREEN);
+				canvas.drawPoint(t_cx, t_cy, p);
 			}
 			p.setAlpha(255);
 
@@ -2289,11 +3069,13 @@ public class HDRProcessor {
 			for(int i=0;i<2;i++) {
 				int off_x = (i==0) ? 0 : width;
 				canvas.drawCircle(centres[i].x + off_x, centres[i].y, 5.0f, p);
-				// draw the rotation:
+				// draw the rotation and scale:
 				int dir_r_x = 50, dir_r_y = 0;
-				int dir_u_x = 0, dir_u_y = -200;
+				int dir_u_x = 0, dir_u_y = -50;
 				if( i == 1 ) {
 					// transform
+					dir_r_y *= y_scale;
+					dir_u_y *= y_scale;
 					int n_dir_r_x = (int)(dir_r_x * Math.cos(rotation) - dir_r_y * Math.sin(rotation));
 					int n_dir_r_y = (int)(dir_r_x * Math.sin(rotation) + dir_r_y * Math.cos(rotation));
 					int n_dir_u_x = (int)(dir_u_x * Math.cos(rotation) - dir_u_y * Math.sin(rotation));
@@ -2322,8 +3104,11 @@ public class HDRProcessor {
 						int t_cx = cx, t_cy = cy;
 						if( k == 1 ) {
 						    // transform
-                            t_cx = (int)(cx * Math.cos(rotation) - cy * Math.sin(rotation));
-                            t_cy = (int)(cx * Math.sin(rotation) + cy * Math.cos(rotation));
+							//t_cx = (int)(cx * Math.cos(rotation) - y_scale * cy * Math.sin(rotation));
+							//t_cy = (int)(cx * Math.sin(rotation) + y_scale * cy * Math.cos(rotation));
+							t_cx = (int)(cx * Math.cos(rotation) - cy * Math.sin(rotation));
+							t_cy = (int)(cx * Math.sin(rotation) + cy * Math.cos(rotation));
+							t_cy *= y_scale;
                             t_cx += offset_x;
                             t_cy += offset_y;
                             // draw on right hand side
@@ -2357,8 +3142,9 @@ public class HDRProcessor {
 			}
 		}
 		freeScripts();
-
-		return new AutoAlignmentByFeatureResult(offset_x, offset_y, rotation);
+		if( MyDebug.LOG )
+			Log.d(TAG, "### autoAlignmentByFeature: total time: " + (System.currentTimeMillis() - time_s));
+		return new AutoAlignmentByFeatureResult(offset_x, offset_y, rotation, y_scale);
 	}
 
 	@RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
@@ -2764,12 +3550,13 @@ public class HDRProcessor {
 				}
 				if( MyDebug.LOG )
 					Log.d(TAG, "    best_id " + best_id + " error: " + best_error);
-				MainActivity mActivity = (MainActivity) context;
 				if( best_error >= 2000000000 ) {
 					Log.e(TAG, "    auto-alignment failed due to overflow");
 					// hitting overflow means behaviour will be unstable under SMP, and auto-alignment won't be reliable anyway
 					best_id = 4; // default to centre
-					/*if( mActivity.is_test ) {
+					/*
+					MainActivity mActivity = (MainActivity) context;
+					if( mActivity.is_test ) {
 						throw new RuntimeException();
 					}*/
 				}
@@ -3052,7 +3839,9 @@ public class HDRProcessor {
 						/*if( MyDebug.LOG )
 							Log.d(TAG, "call histogramScript");*/
 					histogramScript.invoke_init_histogram();
-					histogramScript.forEach_histogram_compute(allocation_in, launch_options);
+					// We compute a histogram based on the max RGB value, so this matches with the scaling we do in histogram_adjust.rs.
+					// This improves the look of the grass in testHDR24, testHDR27.
+					histogramScript.forEach_histogram_compute_by_value(allocation_in, launch_options);
 
 					int [] histogram = new int[256];
 					histogramAllocation.copyTo(histogram);
@@ -3271,15 +4060,15 @@ public class HDRProcessor {
 				Log.d(TAG, "time before histogramScript: " + (System.currentTimeMillis() - time_s));
 			if( avg ) {
 				if( floating_point )
-					histogramScript.forEach_histogram_compute_avg_f(allocation_in);
+					histogramScript.forEach_histogram_compute_by_intensity_f(allocation_in);
 				else
-					histogramScript.forEach_histogram_compute_avg(allocation_in);
+					histogramScript.forEach_histogram_compute_by_intensity(allocation_in);
 			}
 			else {
 				if( floating_point )
-					histogramScript.forEach_histogram_compute_f(allocation_in);
+					histogramScript.forEach_histogram_compute_by_value_f(allocation_in);
 				else
-					histogramScript.forEach_histogram_compute(allocation_in);
+					histogramScript.forEach_histogram_compute_by_value(allocation_in);
 			}
 			if( MyDebug.LOG )
 				Log.d(TAG, "time after histogramScript: " + (System.currentTimeMillis() - time_s));
@@ -3393,7 +4182,7 @@ public class HDRProcessor {
 
 	/** Computes various factors used in the avg_brighten.rs script.
 	 */
-	public static BrightenFactors computeBrightenFactors(int iso, long exposure_time, int brightness, int max_brightness) {
+	public static BrightenFactors computeBrightenFactors(boolean has_iso_exposure, int iso, long exposure_time, int brightness, int max_brightness) {
 		// for outdoor/bright images, don't want max_gain_factor 4, otherwise we lose variation in grass colour in testAvg42
 		// and having max_gain_factor at 1.5 prevents testAvg43, testAvg44 being too bright and oversaturated
 		// for other images, we also don't want max_gain_factor 4, as makes cases too bright and overblown if it would
@@ -3401,8 +4190,7 @@ public class HDRProcessor {
 		// testAvg39
 		float max_gain_factor = 1.5f;
 		int ideal_brightness = 119;
-		//if( iso <= 150 ) {
-		if( iso < 1100 && exposure_time < 1000000000L/59 ) {
+		if( has_iso_exposure && iso < 1100 && exposure_time < 1000000000L/59 ) {
 			// this helps: testAvg12, testAvg21, testAvg35
 			// but note we don't want to treat the following as "bright": testAvg17, testAvg23, testAvg36, testAvg37, testAvg50
 			ideal_brightness = 199;
@@ -3452,7 +4240,7 @@ public class HDRProcessor {
 				Log.d(TAG, "clamped gamma to : " + gamma);
 			}
 		}
-		else if( iso > 150 && gamma < min_gamma_non_bright_c ) {
+		else if( has_iso_exposure && iso > 150 && gamma < min_gamma_non_bright_c ) {
 			// too small gamma on non-bright reduces contrast too much (e.g., see testAvg9)
 			// however we can't clamp too much, see testAvg28, testAvg32
 			gamma = min_gamma_non_bright_c;
@@ -3467,8 +4255,8 @@ public class HDRProcessor {
 				Log.d(TAG, "use piecewise gain/gamma");
 			// use piecewise function with gain and gamma
 			// changed from 0.5 to 0.6 to help grass colour variation in testAvg42; also helps testAvg6; using 0.8 helps testAvg46 and testAvg50 further
-			//float mid_y = iso <= 150 ? 0.6f*255.0f : 0.8f*255.0f;
-			float mid_y = ( iso < 1100 && exposure_time < 1000000000L/59 ) ? 0.6f*255.0f : 0.8f*255.0f;
+			//float mid_y = ( has_iso_exposure && iso <= 150 ) ? 0.6f*255.0f : 0.8f*255.0f;
+			float mid_y = ( has_iso_exposure && iso < 1100 && exposure_time < 1000000000L/59 ) ? 0.6f*255.0f : 0.8f*255.0f;
 			mid_x = mid_y / gain;
 			gamma = (float)(Math.log(mid_y/255.0f) / Math.log(mid_x/max_brightness));
 		}
@@ -3486,7 +4274,7 @@ public class HDRProcessor {
 			}
 		}
 		float low_x = 0.0f;
-		if( iso >= 400 ) {
+		if( has_iso_exposure && iso >= 400 ) {
 			// this helps: testAvg10, testAvg28, testAvg31, testAvg33
 			//low_x = Math.min(8.0f, 0.125f*mid_x);
 			// don't use mid_x directly, otherwise we get unstable behaviour depending on whether we
@@ -3538,7 +4326,7 @@ public class HDRProcessor {
 			Log.d(TAG, "max brightness: " + max_brightness);
 		}
 
-		BrightenFactors brighten_factors = computeBrightenFactors(iso, exposure_time, brightness, max_brightness);
+		BrightenFactors brighten_factors = computeBrightenFactors(true, iso, exposure_time, brightness, max_brightness);
 		float gain = brighten_factors.gain;
 		float low_x = brighten_factors.low_x;
 		float mid_x = brighten_factors.mid_x;
@@ -3599,37 +4387,7 @@ public class HDRProcessor {
 		if( MyDebug.LOG )
 			Log.d(TAG, "median_filter_strength: " + median_filter_strength);
 		avgBrightenScript.set_median_filter_strength(median_filter_strength);
-
-		avgBrightenScript.set_gamma(gamma);
-		avgBrightenScript.set_gain(gain);
-		avgBrightenScript.set_low_x(low_x);
-		avgBrightenScript.set_mid_x(mid_x);
-		avgBrightenScript.set_max_x(max_brightness);
-
-		/* We want A and B s.t.:
-	        float alpha = (value-low_x)/(mid_x-low_x);
-    	    float new_value = (1.0-alpha)*low_x + alpha*gain*mid_x;
-			We should be able to write this as new_value = A * value + B
-			alpha = value/(mid_x-low_x) - low_x/(mid_x-low_x)
-			new_value = low_x - value*low_x/(mid_x-low_x) + low_x^2/(mid_x-low_x) +
-			    value*gain*mid_x/(mid_x-low_x) - gain*mid_x*low_x/(mid_x-low_x)
-			So A = (gain*mid_x - low_x)/(mid_x-low_x)
-			B = low_x + low_x^2/(mid_x-low_x) - gain*mid_x*low_x/(mid_x-low_x)
-			= (low_x*mid_x - low_x^2 + low_x^2 - gain*mid_x*low_x)/(mid_x-low_x)
-			= (low_x*mid_x - gain*mid_x*low_x)/(mid_x-low_x)
-			= low_x*mid_x*(1-gain)/(mid_x-low_x)
-		 */
-		float gain_A = 1.0f, gain_B = 0.0f;
-		if( mid_x > low_x ) {
-			gain_A = (gain * mid_x - low_x) / (mid_x - low_x);
-			gain_B = low_x*mid_x*(1.0f-gain)/ (mid_x - low_x);
-		}
-		if( MyDebug.LOG ) {
-			Log.d(TAG, "gain_A: " + gain_A);
-			Log.d(TAG, "gain_B: " + gain_B);
-		}
-		avgBrightenScript.set_gain_A(gain_A);
-		avgBrightenScript.set_gain_B(gain_B);
+		avgBrightenScript.invoke_setBrightenParameters(gain, gamma, low_x, mid_x, max_brightness);
 
 		/*float tonemap_scale_c = 255.0f;
 		if( MyDebug.LOG )
