@@ -1,13 +1,13 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 28
+    compileSdkVersion 29
     compileOptions.encoding = 'UTF-8'
 
     defaultConfig {
-        applicationId "net.sourceforge.opencamera"
+        applicationId 'mgks.opencam.alt'
         minSdkVersion 15
-        targetSdkVersion 28
+        targetSdkVersion 29
 
         renderscriptTargetApi 20
         //renderscriptSupportModeEnabled true // don't use support library as it bloats the APK, and we don't need pre-4.4 support
@@ -37,5 +37,5 @@ android {
 
 dependencies {
     implementation 'com.android.support:support-v4:28.0.0'
-    testImplementation 'junit:junit:4.12'
+    testImplementation 'junit:junit:4.13-beta-3'
 }
