@@ -4,6 +4,7 @@ import net.sourceforge.opencamera.CameraController.CameraController;
 import net.sourceforge.opencamera.MainActivity;
 import net.sourceforge.opencamera.MyDebug;
 import net.sourceforge.opencamera.PreferenceKeys;
+import net.sourceforge.opencamera.Preview.ApplicationInterface;
 import net.sourceforge.opencamera.Preview.Preview;
 import net.sourceforge.opencamera.R;
 
@@ -157,7 +158,7 @@ public class MainUI {
 
 	private UIPlacement computeUIPlacement() {
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
-		String ui_placement_string = sharedPreferences.getString(PreferenceKeys.UIPlacementPreferenceKey, "ui_right");
+		String ui_placement_string = sharedPreferences.getString(PreferenceKeys.UIPlacementPreferenceKey, "ui_top");
 		switch( ui_placement_string ) {
 			case "ui_left":
 				return UIPlacement.UIPLACEMENT_LEFT;
@@ -174,9 +175,6 @@ public class MainUI {
 			Log.d(TAG, "layoutUI");
 			debug_time = System.currentTimeMillis();
 		}
-
-		// reset:
-		top_margin = 0;
 
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
     	// we cache the preference_ui_placement to save having to check it in the draw() method
@@ -252,6 +250,9 @@ public class MainUI {
 
 		if( !popup_container_only )
 		{
+			// reset:
+			top_margin = 0;
+
 			// we use a dummy button, so that the GUI buttons keep their positioning even if the Settings button is hidden (visibility set to View.GONE)
 			View view = main_activity.findViewById(R.id.gui_anchor);
 			RelativeLayout.LayoutParams layoutParams = (RelativeLayout.LayoutParams)view.getLayoutParams();
@@ -293,10 +294,12 @@ public class MainUI {
             //buttons_permanent.add(main_activity.findViewById(R.id.switch_camera));
             buttons_permanent.add(main_activity.findViewById(R.id.exposure_lock));
 			buttons_permanent.add(main_activity.findViewById(R.id.white_balance_lock));
+			buttons_permanent.add(main_activity.findViewById(R.id.cycle_raw));
 			buttons_permanent.add(main_activity.findViewById(R.id.store_location));
 			buttons_permanent.add(main_activity.findViewById(R.id.text_stamp));
 			buttons_permanent.add(main_activity.findViewById(R.id.stamp));
 			buttons_permanent.add(main_activity.findViewById(R.id.auto_level));
+			buttons_permanent.add(main_activity.findViewById(R.id.cycle_flash));
 			buttons_permanent.add(main_activity.findViewById(R.id.face_detection));
             buttons_permanent.add(main_activity.findViewById(R.id.audio_control));
 			buttons_permanent.add(main_activity.findViewById(R.id.kraken_icon));
@@ -356,9 +359,13 @@ public class MainUI {
 					int total_button_size = count*button_size;
 					int margin = 0;
 					if( total_button_size > display_height ) {
+						if( MyDebug.LOG )
+							Log.d(TAG, "need to reduce button size");
 						button_size = display_height / count;
 					}
 					else {
+						if( MyDebug.LOG )
+							Log.d(TAG, "need to increase margin");
 						if( count > 1 )
 							margin = (display_height - total_button_size) / (count-1);
 					}
@@ -369,6 +376,12 @@ public class MainUI {
 					}
 					for(View this_view : buttons_permanent) {
 						if( this_view.getVisibility() == View.VISIBLE ) {
+							if( MyDebug.LOG ) {
+								Log.d(TAG, "set view layout for: " + this_view.getContentDescription());
+								if( this_view==first_visible_view) {
+									Log.d(TAG,"    first visible view");
+								}
+							}
 							//this_view.setPadding(0, margin/2, 0, margin/2);
 							layoutParams = (RelativeLayout.LayoutParams)this_view.getLayoutParams();
 							// be careful if we change how the margins are laid out: it looks nicer when only the settings icon
@@ -815,6 +828,15 @@ public class MainUI {
 		return sharedPreferences.getBoolean(PreferenceKeys.ShowWhiteBalanceLockPreferenceKey, false);
 	}
 
+	public boolean showCycleRawIcon() {
+		if( !main_activity.getPreview().supportsRaw() )
+			return false;
+		if( !main_activity.getApplicationInterface().isRawAllowed(main_activity.getApplicationInterface().getPhotoMode()) )
+            return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowCycleRawPreferenceKey, false);
+	}
+
 	public boolean showStoreLocationIcon() {
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
 		return sharedPreferences.getBoolean(PreferenceKeys.ShowStoreLocationPreferenceKey, false);
@@ -835,6 +857,13 @@ public class MainUI {
 			return false;
 		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
 		return sharedPreferences.getBoolean(PreferenceKeys.ShowAutoLevelPreferenceKey, false);
+	}
+
+	public boolean showCycleFlashIcon() {
+		if( !main_activity.getPreview().supportsFlash() )
+			return false;
+		SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(main_activity);
+		return sharedPreferences.getBoolean(PreferenceKeys.ShowCycleFlashPreferenceKey, false);
 	}
 
 	public boolean showFaceDetectionIcon() {
@@ -862,10 +891,12 @@ public class MainUI {
 			    View exposureButton = main_activity.findViewById(R.id.exposure);
 			    View exposureLockButton = main_activity.findViewById(R.id.exposure_lock);
 				View whiteBalanceLockButton = main_activity.findViewById(R.id.white_balance_lock);
+				View cycleRawButton = main_activity.findViewById(R.id.cycle_raw);
 				View storeLocationButton = main_activity.findViewById(R.id.store_location);
 				View textStampButton = main_activity.findViewById(R.id.text_stamp);
 				View stampButton = main_activity.findViewById(R.id.stamp);
 				View autoLevelButton = main_activity.findViewById(R.id.auto_level);
+				View cycleFlashButton = main_activity.findViewById(R.id.cycle_flash);
 				View faceDetectionButton = main_activity.findViewById(R.id.face_detection);
 			    View audioControlButton = main_activity.findViewById(R.id.audio_control);
 			    View popupButton = main_activity.findViewById(R.id.popup);
@@ -882,6 +913,8 @@ public class MainUI {
 			    	exposureLockButton.setVisibility(visibility);
 				if( showWhiteBalanceLockIcon() )
 					whiteBalanceLockButton.setVisibility(visibility);
+				if( showCycleRawIcon() )
+					cycleRawButton.setVisibility(visibility);
 				if( showStoreLocationIcon() )
 					storeLocationButton.setVisibility(visibility);
 			    if( showTextStampIcon() )
@@ -890,6 +923,8 @@ public class MainUI {
 			    	stampButton.setVisibility(visibility);
 			    if( showAutoLevelIcon() )
 			    	autoLevelButton.setVisibility(visibility);
+			    if( showCycleFlashIcon() )
+			    	cycleFlashButton.setVisibility(visibility);
 			    if( showFaceDetectionIcon() )
 			    	faceDetectionButton.setVisibility(visibility);
 			    if( main_activity.hasAudioControl() )
@@ -966,10 +1001,12 @@ public class MainUI {
 			    View exposureButton = main_activity.findViewById(R.id.exposure);
 			    View exposureLockButton = main_activity.findViewById(R.id.exposure_lock);
 				View whiteBalanceLockButton = main_activity.findViewById(R.id.white_balance_lock);
+				View cycleRawButton = main_activity.findViewById(R.id.cycle_raw);
 				View storeLocationButton = main_activity.findViewById(R.id.store_location);
 				View textStampButton = main_activity.findViewById(R.id.text_stamp);
 				View stampButton = main_activity.findViewById(R.id.stamp);
 				View autoLevelButton = main_activity.findViewById(R.id.auto_level);
+				View cycleFlashButton = main_activity.findViewById(R.id.cycle_flash);
 				View faceDetectionButton = main_activity.findViewById(R.id.face_detection);
 			    View audioControlButton = main_activity.findViewById(R.id.audio_control);
 			    View popupButton = main_activity.findViewById(R.id.popup);
@@ -982,6 +1019,8 @@ public class MainUI {
 			    	exposureLockButton.setVisibility(visibility_video); // still allow exposure lock when recording video
 			    if( showWhiteBalanceLockIcon() )
 			    	whiteBalanceLockButton.setVisibility(visibility_video); // still allow white balance lock when recording video
+				if( showCycleRawIcon() )
+					cycleRawButton.setVisibility(visibility);
 				if( showStoreLocationIcon() )
 					storeLocationButton.setVisibility(visibility);
 			    if( showTextStampIcon() )
@@ -990,6 +1029,8 @@ public class MainUI {
 					stampButton.setVisibility(visibility);
 			    if( showAutoLevelIcon() )
 			    	autoLevelButton.setVisibility(visibility);
+			    if( showCycleFlashIcon() )
+			    	cycleFlashButton.setVisibility(visibility);
 				if( showFaceDetectionIcon() )
 					faceDetectionButton.setVisibility(visibility);
 			    if( main_activity.hasAudioControl() )
@@ -1031,6 +1072,23 @@ public class MainUI {
 		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.white_balance_unlock : R.string.white_balance_lock) );
 	}
 
+	public void updateCycleRawIcon() {
+		ApplicationInterface.RawPref raw_pref = main_activity.getApplicationInterface().getRawPref();
+		ImageButton view = main_activity.findViewById(R.id.cycle_raw);
+		if( raw_pref == ApplicationInterface.RawPref.RAWPREF_JPEG_DNG ) {
+			if( main_activity.getApplicationInterface().isRawOnly() ) {
+				// actually RAW only
+				view.setImageResource(R.drawable.raw_only_icon);
+			}
+			else {
+				view.setImageResource(R.drawable.raw_icon);
+			}
+		}
+		else {
+			view.setImageResource(R.drawable.raw_off_icon);
+		}
+	}
+
 	public void updateStoreLocationIcon() {
 		ImageButton view = main_activity.findViewById(R.id.store_location);
 		boolean enabled = main_activity.getApplicationInterface().getGeotaggingPref();
@@ -1058,6 +1116,33 @@ public class MainUI {
 		view.setContentDescription( main_activity.getResources().getString(enabled ? R.string.auto_level_disable : R.string.auto_level_enable) );
 	}
 
+	public void updateCycleFlashIcon() {
+		String flash_value = main_activity.getApplicationInterface().getFlashPref();
+		if( flash_value != null ) {
+			ImageButton view = main_activity.findViewById(R.id.cycle_flash);
+			switch( flash_value ) {
+				case "flash_off":
+					view.setImageResource(R.drawable.flash_off);
+					break;
+				case "flash_auto":
+				case "flash_frontscreen_auto":
+					view.setImageResource(R.drawable.flash_auto);
+					break;
+				case "flash_on":
+				case "flash_frontscreen_on":
+					view.setImageResource(R.drawable.flash_on);
+					break;
+				case "flash_torch":
+				case "flash_frontscreen_torch":
+					view.setImageResource(R.drawable.flash_torch);
+					break;
+				case "flash_red_eye":
+					view.setImageResource(R.drawable.flash_red_eye);
+					break;
+			}
+		}
+	}
+
 	public void updateFaceDetectionIcon() {
 		ImageButton view = main_activity.findViewById(R.id.face_detection);
 		boolean enabled = main_activity.getApplicationInterface().getFaceDetectionPref();
@@ -1070,10 +1155,12 @@ public class MainUI {
 			Log.d(TAG, "updateOnScreenIcons");
 		this.updateExposureLockIcon();
 		this.updateWhiteBalanceLockIcon();
+		this.updateCycleRawIcon();
 		this.updateStoreLocationIcon();
 		this.updateTextStampIcon();
 		this.updateStampIcon();
 		this.updateAutoLevelIcon();
+		this.updateCycleFlashIcon();
 		this.updateFaceDetectionIcon();
 	}
 
@@ -1142,7 +1229,6 @@ public class MainUI {
 		View exposure_seek_bar = main_activity.findViewById(R.id.exposure_container);
 		View shutter_seekbar = main_activity.findViewById(R.id.exposure_time_seekbar);
 		View iso_seekbar = main_activity.findViewById(R.id.iso_seekbar);
-		View sliders_container = main_activity.findViewById(R.id.sliders_container);
 		View wb_seekbar = main_activity.findViewById(R.id.white_balance_seekbar);
 		// Set all lines to black
 		iso_buttons_container.setBackgroundColor(Color.TRANSPARENT);
@@ -1167,7 +1253,6 @@ public class MainUI {
         View exposure_seek_bar = main_activity.findViewById(R.id.exposure_container);
         View shutter_seekbar = main_activity.findViewById(R.id.exposure_time_seekbar);
         View iso_seekbar = main_activity.findViewById(R.id.iso_seekbar);
-        View sliders_container = main_activity.findViewById(R.id.sliders_container);
         View wb_seekbar = main_activity.findViewById(R.id.white_balance_seekbar);
         // Our order for lines is:
         // - ISO buttons
@@ -1229,12 +1314,12 @@ public class MainUI {
 		}
     }
 
-    public void nextExposureUILine() {
+    private void nextExposureUILine() {
         mExposureLine++;
         highlightExposureUILine(true);
     }
 
-    public void previousExposureUILine() {
+    private void previousExposureUILine() {
         mExposureLine--;
         highlightExposureUILine(false);
     }
@@ -1246,7 +1331,7 @@ public class MainUI {
      *  -2: Shutter speed
      *  -3: exposure seek bar
       */
-    public void nextExposureUIItem() {
+	private void nextExposureUIItem() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "nextExposureUIItem");
         switch (mExposureLine) {
@@ -1268,7 +1353,7 @@ public class MainUI {
         }
     }
 
-    public void previousExposureUIItem() {
+    private void previousExposureUIItem() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "previousExposureUIItem");
         switch (mExposureLine) {
@@ -1330,7 +1415,7 @@ public class MainUI {
      *         // - Shutter speed
      *         // - exposure seek bar
      */
-    public void selectExposureUILine() {
+	private void selectExposureUILine() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "selectExposureUILine");
         if (!isExposureUIOpen()) { // Safety check
@@ -1768,7 +1853,10 @@ public class MainUI {
 		String flash_value = main_activity.getPreview().getCurrentFlashValue();
 		if( MyDebug.LOG )
 			Log.d(TAG, "flash_value: " + flash_value);
-    	if( flash_value != null && flash_value.equals("flash_off") ) {
+		if( main_activity.getMainUI().showCycleFlashIcon() ) {
+			popup.setImageResource(R.drawable.popup);
+		}
+    	else if( flash_value != null && flash_value.equals("flash_off") ) {
 			popup.setImageResource(R.drawable.popup_flash_off);
     	}
     	else if( flash_value != null && ( flash_value.equals("flash_torch") || flash_value.equals("flash_frontscreen_torch") ) ) {
@@ -1892,7 +1980,7 @@ public class MainUI {
      * @param highlight
      * @param goLeft
      */
-	public void highlightPopupIcon(boolean highlight, boolean goLeft) {
+	private void highlightPopupIcon(boolean highlight, boolean goLeft) {
 		if( MyDebug.LOG ) {
 			Log.d(TAG, "highlightPopupIcon");
 			Log.d(TAG, "highlight: " + highlight);
@@ -1930,25 +2018,25 @@ public class MainUI {
      * Select the next line on the settings popup. Called by MainActivity
      * when receiving a remote control command.
      */
-	public void nextPopupLine() {
+	private void nextPopupLine() {
 		highlightPopupLine(false, false);
 		mPopupLine++;
 		highlightPopupLine(true, false);
 	}
 
-	public void previousPopupLine() {
+	private void previousPopupLine() {
 		highlightPopupLine(false, true);
 		mPopupLine--;
 		highlightPopupLine(true, true);
 	}
 
-	public void nextPopupIcon() {
+	private void nextPopupIcon() {
 		highlightPopupIcon(false, false);
 		mPopupIcon++;
 		highlightPopupIcon(true, false);
 	}
 
-	public void previousPopupIcon() {
+	private void previousPopupIcon() {
 		highlightPopupIcon(false, true);
 		mPopupIcon--;
 		highlightPopupIcon(true, true);
@@ -1957,7 +2045,7 @@ public class MainUI {
     /**
      * Simulates a press on the currently selected icon
      */
-	public void clickSelectedIcon() {
+	private void clickSelectedIcon() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "clickSelectedIcon: " + mHighlightedIcon);
 		if (mHighlightedIcon != null) {
@@ -2035,7 +2123,6 @@ public class MainUI {
 		// doesn't seem to be any performance benefit in only calling that part
 		popup_container.getViewTreeObserver().addOnGlobalLayoutListener(
 			new OnGlobalLayoutListener() {
-				@SuppressWarnings("deprecation")
 				@Override
 			    public void onGlobalLayout() {
 					if( MyDebug.LOG )
@@ -2138,7 +2225,6 @@ public class MainUI {
 		}
 	}
 
-	@SuppressWarnings("deprecation")
 	public boolean onKeyDown(int keyCode, KeyEvent event) {
 		if( MyDebug.LOG )
 			Log.d(TAG, "onKeyDown: " + keyCode);
@@ -2680,5 +2766,21 @@ public class MainUI {
 
     public PopupView getPopupView() {
 		return popup_view;
+	}
+
+	public boolean testGetRemoteControlMode() {
+		return remote_control_mode;
+	}
+
+	public int testGetPopupLine() {
+		return mPopupLine;
+	}
+
+	public int testGetPopupIcon() {
+		return mPopupIcon;
+	}
+
+	public int testGetExposureLine() {
+		return mExposureLine;
 	}
 }

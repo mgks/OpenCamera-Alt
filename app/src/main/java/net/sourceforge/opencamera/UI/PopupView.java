@@ -112,6 +112,7 @@ public class PopupView extends LinearLayout {
 		final Preview preview = main_activity.getPreview();
 		if( MyDebug.LOG )
 			Log.d(TAG, "PopupView time 2: " + (System.nanoTime() - debug_time));
+		if( !main_activity.getMainUI().showCycleFlashIcon() )
 		{
 	        List<String> supported_flash_values = preview.getSupportedFlashValues();
 			if( preview.isVideo() && supported_flash_values != null ) {
@@ -344,9 +345,10 @@ public class PopupView extends LinearLayout {
 			if( MyDebug.LOG )
 				Log.d(TAG, "PopupView time 8: " + (System.nanoTime() - debug_time));
 
-			if( !preview.isVideo() ) {
-				// only show photo resolutions in photo mode - even if photo snapshots whilst recording video is supported, the
-				// resolutions for that won't match what the user has requested for photo mode resolutions
+			if( !preview.isVideo() && photo_mode != MyApplicationInterface.PhotoMode.Panorama ) {
+				// Only show photo resolutions in photo mode - even if photo snapshots whilst recording video is supported, the
+				// resolutions for that won't match what the user has requested for photo mode resolutions.
+				// And Panorama mode chooses its own resolution.
 				final List<CameraController.Size> picture_sizes = new ArrayList<>(preview.getSupportedPictureSizes(true));
 				// take a copy so that we can reorder
 				// picture_sizes is sorted high to low, but we want to order low to high
@@ -1474,7 +1476,6 @@ public class PopupView extends LinearLayout {
 						final ScrollView popup_container = main_activity.findViewById(R.id.popup_container);
 						popup_container.getViewTreeObserver().addOnGlobalLayoutListener(
 								new OnGlobalLayoutListener() {
-									@SuppressWarnings("deprecation")
 									@Override
 									public void onGlobalLayout() {
 										if( MyDebug.LOG )

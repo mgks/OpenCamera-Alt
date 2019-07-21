@@ -29,6 +29,9 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -83,6 +86,12 @@ public class DrawPreview {
 	private String ghost_image_pref;
 	private String ghost_selected_image_pref = "";
 	private Bitmap ghost_selected_image_bitmap;
+	private boolean want_histogram;
+	private Preview.HistogramType histogram_type;
+	private boolean want_zebra_stripes;
+	private int zebra_stripes_threshold;
+	private boolean want_focus_peaking;
+	private int focus_peaking_color_pref;
 
 	// avoid doing things that allocate memory every frame!
 	private final Paint p = new Paint();
@@ -94,6 +103,7 @@ public class DrawPreview {
 	private Calendar calendar;
 	private final DateFormat dateFormatTimeInstance = DateFormat.getTimeInstance();
 	private final String ybounds_text;
+	private final int [] temp_histogram_channel = new int[256];
 	// cached Rects for drawTextWithBackground() calls
 	private Rect text_bounds_time;
 	private Rect text_bounds_free_memory;
@@ -113,7 +123,11 @@ public class DrawPreview {
 	private long last_current_time_time;
 
 	private String iso_exposure_string;
+	private boolean is_scanning;
 	private long last_iso_exposure_time;
+
+	private boolean need_flash_indicator = false;
+	private long last_need_flash_indicator_time;
 
 	private final IntentFilter battery_ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
 	private boolean has_battery_frac;
@@ -128,7 +142,8 @@ public class DrawPreview {
 
 	private Bitmap location_bitmap;
 	private Bitmap location_off_bitmap;
-	private Bitmap raw_bitmap;
+	private Bitmap raw_jpeg_bitmap;
+	private Bitmap raw_only_bitmap;
 	private Bitmap auto_stabilise_bitmap;
 	private Bitmap dro_bitmap;
 	private Bitmap hdr_bitmap;
@@ -148,6 +163,7 @@ public class DrawPreview {
 
 	private final Rect icon_dest = new Rect();
 	private long needs_flash_time = -1; // time when flash symbol comes on (used for fade-in effect)
+	private final Path path = new Path();
 
 	private Bitmap last_thumbnail; // thumbnail of last picture taken
 	private volatile boolean thumbnail_anim; // whether we are displaying the thumbnail animation; must be volatile for test project reading the state
@@ -201,7 +217,8 @@ public class DrawPreview {
 
         location_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.ic_gps_fixed_white_48dp);
     	location_off_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.ic_gps_off_white_48dp);
-		raw_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.raw_icon);
+		raw_jpeg_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.raw_icon);
+		raw_only_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.raw_only_icon);
 		auto_stabilise_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.auto_stabilise_icon);
 		dro_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.dro_icon);
 		hdr_bitmap = BitmapFactory.decodeResource(getContext().getResources(), R.drawable.ic_hdr_on_white_48dp);
@@ -234,9 +251,13 @@ public class DrawPreview {
 			location_off_bitmap.recycle();
 			location_off_bitmap = null;
 		}
-		if( raw_bitmap != null ) {
-			raw_bitmap.recycle();
-			raw_bitmap = null;
+		if( raw_jpeg_bitmap != null ) {
+			raw_jpeg_bitmap.recycle();
+			raw_jpeg_bitmap = null;
+		}
+		if( raw_only_bitmap != null ) {
+			raw_only_bitmap.recycle();
+			raw_only_bitmap = null;
 		}
 		if( auto_stabilise_bitmap != null ) {
 			auto_stabilise_bitmap.recycle();
@@ -516,6 +537,46 @@ public class DrawPreview {
 			}
 			ghost_selected_image_pref = "";
 		}
+
+		String histogram_pref = sharedPreferences.getString(PreferenceKeys.HistogramPreferenceKey, "preference_histogram_off");
+		want_histogram = !histogram_pref.equals("preference_histogram_off") && main_activity.supportsPreviewBitmaps();
+		histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_VALUE;
+		if( want_histogram ) {
+			switch( histogram_pref ) {
+				case "preference_histogram_rgb":
+					histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_RGB;
+					break;
+				case "preference_histogram_luminance":
+					histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_LUMINANCE;
+					break;
+				case "preference_histogram_value":
+					histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_VALUE;
+					break;
+				case "preference_histogram_intensity":
+					histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_INTENSITY;
+					break;
+				case "preference_histogram_lightness":
+					histogram_type = Preview.HistogramType.HISTOGRAM_TYPE_LIGHTNESS;
+					break;
+			}
+		}
+
+		String zebra_stripes_value = sharedPreferences.getString(PreferenceKeys.ZebraStripesPreferenceKey, "0");
+		try {
+			zebra_stripes_threshold = Integer.parseInt(zebra_stripes_value);
+		}
+		catch(NumberFormatException e) {
+			if( MyDebug.LOG )
+				Log.e(TAG, "failed to parse zebra_stripes_value: " + zebra_stripes_value);
+			e.printStackTrace();
+			zebra_stripes_threshold = 0;
+		}
+		want_zebra_stripes = zebra_stripes_threshold != 0 & main_activity.supportsPreviewBitmaps();
+
+		String focus_peaking_pref = sharedPreferences.getString(PreferenceKeys.FocusPeakingPreferenceKey, "preference_focus_peaking_off");
+		want_focus_peaking = !focus_peaking_pref.equals("preference_focus_peaking_off") && main_activity.supportsPreviewBitmaps();
+		String focus_peaking_color = sharedPreferences.getString(PreferenceKeys.FocusPeakingColorPreferenceKey, "#ffffff");
+		focus_peaking_color_pref = Color.parseColor(focus_peaking_color);
 
 		has_settings = true;
 	}
@@ -874,6 +935,7 @@ public class DrawPreview {
 		int location_x = top_x;
 		int location_y = top_y;
 		final int gap_y = (int) (0 * scale + 0.5f); // convert dps to pixels
+		final int icon_gap_y = (int) (2 * scale + 0.5f); // convert dps to pixels
 		if( ui_rotation == 90 || ui_rotation == 270 ) {
 			int diff = canvas.getWidth() - canvas.getHeight();
 			location_x += diff/2;
@@ -926,7 +988,7 @@ public class DrawPreview {
 		if( camera_controller != null && show_free_memory_pref ) {
 			if( last_free_memory_time == 0 || time_ms > last_free_memory_time + 10000 ) {
 				// don't call this too often, for UI performance
-				long free_mb = main_activity.freeMemory();
+				long free_mb = main_activity.getStorageUtils().freeMemory();
 				if( free_mb >= 0 ) {
 					float new_free_memory_gb = free_mb/1024.0f;
 					if( MyDebug.LOG ) {
@@ -996,11 +1058,7 @@ public class DrawPreview {
 					iso_exposure_string += preview.getFrameDurationString(frame_duration);
 				}
 
-				last_iso_exposure_time = time_ms;
-			}
-
-			if( iso_exposure_string.length() > 0 ) {
-				boolean is_scanning = false;
+				is_scanning = false;
 				if( camera_controller.captureResultIsAEScanning() ) {
 					// only show as scanning if in auto ISO mode (problem on Nexus 6 at least that if we're in manual ISO mode, after pausing and
 					// resuming, the camera driver continually reports CONTROL_AE_STATE_SEARCHING)
@@ -1010,6 +1068,10 @@ public class DrawPreview {
 					}
 				}
 
+				last_iso_exposure_time = time_ms;
+			}
+
+			if( iso_exposure_string.length() > 0 ) {
 				int text_color = Color.rgb(255, 235, 59); // Yellow 500
 				if( is_scanning ) {
 					// we only change the color if ae scanning is at least a certain time, otherwise we get a lot of flickering of the color
@@ -1037,9 +1099,12 @@ public class DrawPreview {
 			}
 		}
 
+		// padding to align with earlier text
+		final int flash_padding = (int) (1 * scale + 0.5f); // convert dps to pixels
+
 		if( camera_controller != null ) {
-			// padding to align with earlier text
-			final int flash_padding = (int) (1 * scale + 0.5f); // convert dps to pixels
+			// draw info icons
+
 			int location_x2 = location_x - flash_padding;
 			final int icon_size = (int) (16 * scale + 0.5f); // convert dps to pixels
 			if( ui_rotation == 180 ) {
@@ -1074,11 +1139,11 @@ public class DrawPreview {
 				}
 			}
 
-			// RAW not enabled in HDR, ExpoBracketing or FocusBracketing modes (see note in CameraController.takePictureBurstBracketing())
-			// RAW not enabled in NR mode (see note in CameraController.takePictureBurst())
 			if(
 					is_raw_pref &&
-					preview.supportsRaw() // RAW can be enabled, even if it isn't available for this camera (e.g., user enables RAW for back camera, but then switches to front camera which doesn't support it)
+					preview.supportsRaw()
+					// RAW can be enabled, even if it isn't available for this camera (e.g., user enables RAW for back camera, but then
+					// switches to front camera which doesn't support it)
 					) {
 				icon_dest.set(location_x2, location_y, location_x2 + icon_size, location_y + icon_size);
 				p.setStyle(Paint.Style.FILL);
@@ -1086,7 +1151,7 @@ public class DrawPreview {
 				p.setAlpha(64);
 				canvas.drawRect(icon_dest, p);
 				p.setAlpha(255);
-				canvas.drawBitmap(raw_bitmap, null, icon_dest, p);
+				canvas.drawBitmap(is_raw_only_pref ? raw_only_bitmap : raw_jpeg_bitmap, null, icon_dest, p);
 
 				if( ui_rotation == 180 ) {
 					location_x2 -= icon_size + flash_padding;
@@ -1153,7 +1218,11 @@ public class DrawPreview {
 						photoMode == MyApplicationInterface.PhotoMode.NoiseReduction ? nr_bitmap :
 								null;
 				if( bitmap != null ) {
+					if( photoMode == MyApplicationInterface.PhotoMode.NoiseReduction && applicationInterface.getNRModePref() == ApplicationInterface.NRModePref.NRMODE_LOW_LIGHT ) {
+						p.setColorFilter(new PorterDuffColorFilter(Color.rgb(255, 235, 59), PorterDuff.Mode.SRC_IN)); // Yellow 500
+					}
 					canvas.drawBitmap(bitmap, null, icon_dest, p);
+					p.setColorFilter(null);
 
 					if( ui_rotation == 180 ) {
 						location_x2 -= icon_size + flash_padding;
@@ -1234,13 +1303,21 @@ public class DrawPreview {
 				}
 			}
 
-			String flash_value = preview.getCurrentFlashValue();
-			// note, flash_frontscreen_auto not yet support for the flash symbol (as camera_controller.needsFlash() only returns info on the built-in actual flash, not frontscreen flash)
-			if( flash_value != null &&
-					( flash_value.equals("flash_on") || flash_value.equals("flash_red_eye")
-							|| ( flash_value.equals("flash_auto") && camera_controller.needsFlash() )
-							|| camera_controller.needsFrontScreenFlash() ) &&
-					!applicationInterface.isVideoPref() ) { // flash-indicator not supported for photos taken in video mode
+			if( time_ms > last_need_flash_indicator_time + 100 ) {
+				need_flash_indicator = false;
+				String flash_value = preview.getCurrentFlashValue();
+				// note, flash_frontscreen_auto not yet support for the flash symbol (as camera_controller.needsFlash() only returns info on the built-in actual flash, not frontscreen flash)
+				if( flash_value != null &&
+						( flash_value.equals("flash_on")
+								|| ( (flash_value.equals("flash_auto") || flash_value.equals("flash_red_eye")) && camera_controller.needsFlash() )
+								|| camera_controller.needsFrontScreenFlash() ) &&
+						!applicationInterface.isVideoPref() ) { // flash-indicator not supported for photos taken in video mode
+					need_flash_indicator = true;
+				}
+
+				last_need_flash_indicator_time = time_ms;
+			}
+			if( need_flash_indicator ) {
 				if( needs_flash_time != -1 ) {
 					final long fade_ms = 500;
 					float alpha = (time_ms - needs_flash_time)/(float)fade_ms;
@@ -1256,6 +1333,7 @@ public class DrawPreview {
 					canvas.drawRect(icon_dest, p);
 					p.setAlpha((int)(255*alpha));
 					canvas.drawBitmap(flash_bitmap, null, icon_dest, p);
+					p.setAlpha(255);
 				}
 				else {
 					needs_flash_time = time_ms;
@@ -1264,7 +1342,128 @@ public class DrawPreview {
 			else {
 				needs_flash_time = -1;
 			}
+
+			if( ui_rotation == 90 ) {
+				location_y -= icon_gap_y;
+			}
+			else {
+				location_y += (icon_size+icon_gap_y);
+			}
 		}
+
+		if( camera_controller != null ) {
+			// draw histogram
+			if( preview.isPreviewBitmapEnabled() ) {
+				int [] histogram = preview.getHistogram();
+				if( histogram != null ) {
+					/*if( MyDebug.LOG )
+						Log.d(TAG, "histogram length: " + histogram.length);*/
+					final int histogram_width = (int) (100 * scale + 0.5f); // convert dps to pixels
+					final int histogram_height = (int) (60 * scale + 0.5f); // convert dps to pixels
+					// n.b., if changing the histogram_height, remember to update focus_seekbar and
+					// focus_bracketing_target_seekbar margins in activity_main.xml
+					int location_x2 = location_x - flash_padding;
+					if( ui_rotation == 180 ) {
+						location_x2 = location_x - histogram_width + flash_padding;
+					}
+					icon_dest.set(location_x2 - flash_padding, location_y, location_x2 - flash_padding + histogram_width, location_y + histogram_height);
+					if( ui_rotation == 90 ) {
+						icon_dest.top -= histogram_height;
+						icon_dest.bottom -= histogram_height;
+					}
+
+					p.setStyle(Paint.Style.FILL);
+					p.setColor(Color.argb(64, 0, 0, 0));
+					canvas.drawRect(icon_dest, p);
+
+					int max = 0;
+					for(int value : histogram) {
+						max = Math.max(max, value);
+					}
+
+					if( histogram.length == 256*3 ) {
+						int c=0;
+
+						/* For overlapping rgb, we'll have:
+							(1, (1-a2).(1-a1).a0.r, (1-a2).a1.g, a2.b)
+						   If we wanted to have the alpha scaling the same (i.e., same r, g, b values
+						   if r=g=b, then this gives:
+						       a2 = 1/[2+1/a0]
+                               a1 = 1 - a2/[a0.(1-a2)]
+                           However this then means that for non-overlapping colours, red is too
+                           strong whilst blue is too weak, so we instead adjust to:
+                               a0' = (a0+a1)/2
+                               a1' = a1
+                               a2' = (a1+a2)/2
+						 */
+						/*final int a0 = 255;
+						final int a1 = 128;
+						final int a2 = 85;*/
+						//final int a0 = 191;
+						final int a0 = 151;
+						final int a1 = 110;
+						//final int a2 = 77;
+						final int a2 = 94;
+						/*final int a0 = 128;
+						final int a1 = 85;
+						final int a2 = 64;*/
+						final int r = 255;
+						final int g = 255;
+						final int b = 255;
+
+						for(int i=0;i<256;i++)
+							temp_histogram_channel[i] = histogram[c++];
+						p.setColor(Color.argb(a0, r, 0, 0));
+						drawHistogramChannel(canvas, temp_histogram_channel, max);
+
+						for(int i=0;i<256;i++)
+							temp_histogram_channel[i] = histogram[c++];
+						p.setColor(Color.argb(a1, 0, g, 0));
+						drawHistogramChannel(canvas, temp_histogram_channel, max);
+
+						for(int i=0;i<256;i++)
+							temp_histogram_channel[i] = histogram[c++];
+						p.setColor(Color.argb(a2, 0, 0, b));
+						drawHistogramChannel(canvas, temp_histogram_channel, max);
+					}
+					else {
+						p.setColor(Color.argb(192, 255, 255, 255));
+						drawHistogramChannel(canvas, histogram, max);
+					}
+				}
+			}
+		}
+	}
+
+	/** Draws histogram for a single color channel.
+	 * @param canvas Canvas to draw onto.
+	 * @param histogram_channel The histogram for this color.
+	 * @param max The maximum value of histogram_channel, or if drawing multiple channels, this
+	 *            should be the maximum value of all histogram channels.
+	 */
+	private void drawHistogramChannel(Canvas canvas, int [] histogram_channel, int max) {
+		long debug_time = 0;
+		if( MyDebug.LOG ) {
+			debug_time = System.currentTimeMillis();
+		}
+
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "drawHistogramChannel, time before creating path: " + (System.currentTimeMillis() - debug_time));*/
+		path.reset();
+		path.moveTo(icon_dest.left, icon_dest.bottom);
+		for(int c=0;c<histogram_channel.length;c++) {
+			double c_alpha = c / (double)histogram_channel.length;
+			int x = (int)(c_alpha * icon_dest.width());
+			int h = (histogram_channel[c] * icon_dest.height()) / max;
+			path.lineTo(icon_dest.left + x, icon_dest.bottom - h);
+		}
+		path.lineTo(icon_dest.right, icon_dest.bottom);
+		path.close();
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "drawHistogramChannel, time after creating path: " + (System.currentTimeMillis() - debug_time));*/
+		canvas.drawPath(path, p);
+		/*if( MyDebug.LOG )
+			Log.d(TAG, "drawHistogramChannel, time before drawing path: " + (System.currentTimeMillis() - debug_time));*/
 	}
 
     /** Formats the level_angle double into a string.
@@ -1520,6 +1719,10 @@ public class DrawPreview {
 					p.setTextSize(14 * scale + 0.5f); // convert dps to pixels
 					p.setTextAlign(Paint.Align.CENTER);
 					int pixels_offset_y = 3*text_y; // avoid overwriting the zoom, and also allow a bit extra space
+					if( ui_rotation == 0 && applicationInterface.getPhotoMode() == MyApplicationInterface.PhotoMode.FocusBracketing ) {
+						// avoid clashing with the target focus bracketing seekbar in landscape orientation
+						pixels_offset_y = 5*text_y;
+					}
 					String text = getContext().getResources().getString(R.string.capturing) + " " + n_burst_taken;
 					if( n_burst_total > 0 ) {
 						text += " / " + n_burst_total;
@@ -1545,7 +1748,9 @@ public class DrawPreview {
 					p.setTextSize(14 * scale + 0.5f); // convert dps to pixels
 					p.setTextAlign(Paint.Align.CENTER);
 					int pixels_offset_y = 3 * text_y; // avoid overwriting the zoom, and also allow a bit extra space
-					applicationInterface.drawTextWithBackground(canvas, p, getContext().getResources().getString(R.string.processing), Color.LTGRAY, Color.BLACK, canvas.getWidth() / 2, text_base_y - pixels_offset_y);
+					int n_images_to_save = applicationInterface.getImageSaver().getNRealImagesToSave();
+					String string = getContext().getResources().getString(R.string.processing) + " (" + n_images_to_save + " " + getContext().getResources().getString(R.string.remaining) + ")";
+					applicationInterface.drawTextWithBackground(canvas, p, string, Color.LTGRAY, Color.BLACK, canvas.getWidth() / 2, text_base_y - pixels_offset_y);
 				}
 			}
 
@@ -1714,7 +1919,7 @@ public class DrawPreview {
 				draw_rect.set(cx - radius - hthickness, cy - 2 * hthickness, cx + radius + hthickness, cy + 2 * hthickness);
 				canvas.drawRoundRect(draw_rect, 2 * hthickness, 2 * hthickness, p);
 				// draw the vertical crossbar
-				draw_rect.set(cx - 2 * hthickness, cy - radius / 2 - hthickness, cx + 2 * hthickness, cy + radius / 2 + hthickness);
+				draw_rect.set(cx - 2 * hthickness, cy - radius / 2.0f - hthickness, cx + 2 * hthickness, cy + radius / 2.0f + hthickness);
 				canvas.drawRoundRect(draw_rect, hthickness, hthickness, p);
 				// draw inner portion
 				if( is_level ) {
@@ -1728,7 +1933,7 @@ public class DrawPreview {
 				canvas.drawRoundRect(draw_rect, hthickness, hthickness, p);
 
 				// draw the vertical crossbar
-				draw_rect.set(cx - hthickness, cy - radius / 2, cx + hthickness, cy + radius / 2);
+				draw_rect.set(cx - hthickness, cy - radius / 2.0f, cx + hthickness, cy + radius / 2.0f);
 				canvas.drawRoundRect(draw_rect, hthickness, hthickness, p);
 
 				if( is_level ) {
@@ -1895,10 +2100,10 @@ public class DrawPreview {
 				float correction_h = st_h/nd_h - 1.0f;
 				int thumbnail_w = (int)(st_w/(1.0f+alpha*correction_w));
 				int thumbnail_h = (int)(st_h/(1.0f+alpha*correction_h));
-				thumbnail_anim_dst_rect.left = thumbnail_x - thumbnail_w/2;
-				thumbnail_anim_dst_rect.top = thumbnail_y - thumbnail_h/2;
-				thumbnail_anim_dst_rect.right = thumbnail_x + thumbnail_w/2;
-				thumbnail_anim_dst_rect.bottom = thumbnail_y + thumbnail_h/2;
+				thumbnail_anim_dst_rect.left = thumbnail_x - thumbnail_w/2.0f;
+				thumbnail_anim_dst_rect.top = thumbnail_y - thumbnail_h/2.0f;
+				thumbnail_anim_dst_rect.right = thumbnail_x + thumbnail_w/2.0f;
+				thumbnail_anim_dst_rect.bottom = thumbnail_y + thumbnail_h/2.0f;
 				//canvas.drawBitmap(this.thumbnail, thumbnail_anim_src_rect, thumbnail_anim_dst_rect, p);
 				thumbnail_anim_matrix.setRectToRect(thumbnail_anim_src_rect, thumbnail_anim_dst_rect, Matrix.ScaleToFit.FILL);
 				//thumbnail_anim_matrix.reset();
@@ -2021,6 +2226,32 @@ public class DrawPreview {
 
 		final long time_ms = System.currentTimeMillis();
 
+		// set up preview bitmaps (histogram etc)
+		boolean want_preview_bitmap = want_histogram || want_zebra_stripes || want_focus_peaking;
+		if( want_preview_bitmap != preview.isPreviewBitmapEnabled() ) {
+			if( want_preview_bitmap ) {
+				preview.enablePreviewBitmap();
+			}
+			else
+				preview.disablePreviewBitmap();
+		}
+		if( want_preview_bitmap ) {
+			if( want_histogram )
+				preview.enableHistogram(histogram_type);
+			else
+				preview.disableHistogram();
+
+			if( want_zebra_stripes )
+				preview.enableZebraStripes(zebra_stripes_threshold);
+			else
+				preview.disableZebraStripes();
+
+			if( want_focus_peaking )
+				preview.enableFocusPeaking();
+			else
+				preview.disableFocusPeaking();
+		}
+
 		// see documentation for CameraController.shouldCoverPreview()
 		if( preview.usingCamera2API() && ( camera_controller == null || camera_controller.shouldCoverPreview() ) ) {
 			p.setColor(Color.BLACK);
@@ -2090,6 +2321,33 @@ public class DrawPreview {
 			p.setAlpha(255);
 		}
 
+		if( preview.isPreviewBitmapEnabled() ) {
+			// draw additional real-time effects
+
+			// draw zebra stripes
+			Bitmap zebra_stripes_bitmap = preview.getZebraStripesBitmap();
+			if( zebra_stripes_bitmap != null ) {
+				setLastImageMatrix(canvas, zebra_stripes_bitmap, 0, false);
+				p.setAlpha(255);
+				canvas.drawBitmap(zebra_stripes_bitmap, last_image_matrix, p);
+			}
+
+			// draw focus peaking
+			Bitmap focus_peaking_bitmap = preview.getFocusPeakingBitmap();
+			if( focus_peaking_bitmap != null ) {
+				setLastImageMatrix(canvas, focus_peaking_bitmap, 0, false);
+				p.setAlpha(127);
+				if( focus_peaking_color_pref != Color.WHITE ) {
+					p.setColorFilter(new PorterDuffColorFilter(focus_peaking_color_pref, PorterDuff.Mode.SRC_IN));
+				}
+				canvas.drawBitmap(focus_peaking_bitmap, last_image_matrix, p);
+				if( focus_peaking_color_pref != Color.WHITE ) {
+					p.setColorFilter(null);
+				}
+                p.setAlpha(255);
+			}
+		}
+
 		doThumbnailAnimation(canvas, time_ms);
 
 		drawUI(canvas, time_ms);
@@ -2112,7 +2370,7 @@ public class DrawPreview {
 			p.setStyle(Paint.Style.FILL); // reset
 		}
 
-		if( enable_gyro_target_spot ) {
+		if( enable_gyro_target_spot && camera_controller != null ) {
 			GyroSensor gyroSensor = main_activity.getApplicationInterface().getGyroSensor();
 			if( gyroSensor.isRecording() ) {
 				gyroSensor.getRelativeInverseVector(transformed_gyro_direction, gyro_direction);
@@ -2131,11 +2389,11 @@ public class DrawPreview {
 					float distance_x = angle_scale_x * (float) Math.tan(angle_x); // angle_scale is already in pixels rather than dps
 					float distance_y = angle_scale_y * (float) Math.tan(angle_y); // angle_scale is already in pixels rather than dps
 					p.setColor(Color.WHITE);
-					drawGyroSpot(canvas, 0.0f, 0.0f, -1.0f, 0.0f); // draw spot for the centre of the screen, to help the user orient the device
+					drawGyroSpot(canvas, 0.0f, 0.0f, -1.0f, 0.0f, 48); // draw spot for the centre of the screen, to help the user orient the device
 					p.setColor(Color.BLUE);
 					float dir_x = -transformed_gyro_direction_up[1];
 					float dir_y = -transformed_gyro_direction_up[0];
-					drawGyroSpot(canvas, distance_x, distance_y, dir_x, dir_y);
+					drawGyroSpot(canvas, distance_x, distance_y, dir_x, dir_y, 45);
 					/*{
 						// for debug only, draw the gyro spot that isn't calibrated with the accelerometer
 						gyroSensor.getRelativeInverseVectorGyroOnly(transformed_gyro_direction, gyro_direction);
@@ -2147,7 +2405,7 @@ public class DrawPreview {
 						distance_y = angle_scale_y * (float) Math.tan(angle_y); // angle_scale is already in pixels rather than dps
 						dir_x = -transformed_gyro_direction_up[1];
 						dir_y = -transformed_gyro_direction_up[0];
-						drawGyroSpot(canvas, distance_x, distance_y, dir_x, dir_y);
+						drawGyroSpot(canvas, distance_x, distance_y, dir_x, dir_y, 45);
 					}*/
 				}
 
@@ -2206,16 +2464,16 @@ public class DrawPreview {
 		}
 	}
 
-    private void drawGyroSpot(Canvas canvas, float distance_x, float distance_y, float dir_x, float dir_y) {
+    private void drawGyroSpot(Canvas canvas, float distance_x, float distance_y, float dir_x, float dir_y, int radius_dp) {
 		p.setAlpha(64);
-		float radius = (45 * scale + 0.5f); // convert dps to pixels
+		float radius = (radius_dp * scale + 0.5f); // convert dps to pixels
 		float cx = canvas.getWidth()/2.0f + distance_x;
 		float cy = canvas.getHeight()/2.0f + distance_y;
 		canvas.drawCircle(cx, cy, radius, p);
 		p.setAlpha(255);
 
 		// draw crosshairs
-		p.setColor(Color.WHITE);
+		//p.setColor(Color.WHITE);
 		p.setStrokeWidth(stroke_width);
 		canvas.drawLine(cx - radius*dir_x, cy - radius*dir_y, cx + radius*dir_x, cy + radius*dir_y, p);
 		canvas.drawLine(cx - radius*dir_y, cy + radius*dir_x, cx + radius*dir_y, cy - radius*dir_x, p);
