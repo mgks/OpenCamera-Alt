@@ -1,4 +1,4 @@
-package net.sourceforge.opencamera.remotecontrol;
+package net.sourceforge.opencamera.Remotecontrol;
 
 import android.Manifest;
 import android.app.Activity;
